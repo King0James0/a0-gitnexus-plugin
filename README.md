@@ -37,6 +37,20 @@ Agent Zero spawns `gitnexus mcp` and exposes its tools to the agent. Because A0 
 
 Uninstall through the **Plugins UI**. The uninstall hook removes the gitnexus entry from your `mcp_servers` setting (Agent Zero reloads MCP) and, **if this plugin installed the gitnexus CLI, uninstalls it too** — so nothing is left behind. A `gitnexus` you had installed independently beforehand is left untouched. (A manual `rm -rf` of the plugin folder bypasses this hook — always uninstall via the UI for a clean removal.)
 
+## Citing
+
+If you use this in your work, please cite it (use the **"Cite this repository"** button on GitHub, or):
+
+```bibtex
+@misc{a0gitnexusplugin2026,
+  title        = {a0-gitnexus-plugin: GitNexus code-graph for Agent Zero},
+  author       = {King0James0},
+  year         = {2026},
+  howpublished = {\url{https://github.com/King0James0/a0-gitnexus-plugin}},
+  note         = {GitHub repository}
+}
+```
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
