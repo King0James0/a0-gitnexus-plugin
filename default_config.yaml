@@ -1,0 +1,8 @@
+# GitNexus plugin defaults. Override per-scope via the plugin config UI or env.
+#
+# npm package version of the gitnexus CLI to install (the CLI provides `gitnexus mcp`).
+# "latest" installs the newest published version; or pin one, e.g. "1.6.4".
+gitnexus_version: latest
+
+# Key under mcp_servers.mcpServers that this plugin registers (and removes on uninstall).
+mcp_server_name: gitnexus
