@@ -10,15 +10,28 @@ can never block A0 startup.
 
 from __future__ import annotations
 
+import glob
 import json
 import os
 import shutil
 import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
 
 PLUGIN_NAME = "gitnexus"
 # Marker dropped in the plugin dir when THIS plugin installed the gitnexus CLI, so uninstall
 # only removes a binary we added (never a gitnexus the user installed independently).
 INSTALL_MARKER = ".installed-gitnexus"
+# Canvas surface (route 2 — screencast). The gitnexus web UI is a LOCAL-only SPA: it connects to
+# its server at a hardcoded `localhost:4747` over Server-Sent Events, browser-side. That can't be
+# iframed from a remote browser (localhost = the user's machine) and A0's gateway can't carry SSE.
+# So we render the SPA in a headless chromium INSIDE the container (where localhost:4747 works) and
+# CDP-screencast it to the canvas via the shared bridge (helpers/screencast.py) — only pixels cross
+# the gateway (over its WS path). The surface id/token:
+SURFACE_TOKEN = "gitnexus"
+INSTALL_MARKER_CHROME = ".installed-gitnexus-chromium"  # set if WE apt-installed chromium
 
 
 def _log(msg: str) -> None:
@@ -186,8 +199,240 @@ def unregister_mcp() -> None:
             _log(f"could not unregister MCP server: {e}")
 
 
+# --- Canvas surface (route 2: gitnexus serve + headless chromium + CDP screencast bridge) --------
+
+def _runtime_dir() -> str:
+    return os.path.join(_plugin_dir(), "runtime")
+
+
+def _serve_port(cfg: dict | None = None) -> int:
+    try:
+        return int((cfg if cfg is not None else _config()).get("serve_port") or 4747)
+    except Exception:
+        return 4747
+
+
+def _cdp_port(cfg: dict | None = None) -> int:
+    try:
+        return int((cfg if cfg is not None else _config()).get("cdp_port") or 9223)
+    except Exception:
+        return 9223
+
+
+def _bridge_port(cfg: dict | None = None) -> int:
+    try:
+        return int((cfg if cfg is not None else _config()).get("bridge_port") or 14601)
+    except Exception:
+        return 14601
+
+
+def _chrome_path() -> str | None:
+    """Find a Chromium/Chrome to render the SPA: a system browser, else a Playwright cache build."""
+    for name in ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable"):
+        p = shutil.which(name)
+        if p:
+            return p
+    for pat in (
+        "/root/.cache/ms-playwright/chromium-*/chrome-linux/chrome",
+        os.path.expanduser("~/.cache/ms-playwright/chromium-*/chrome-linux/chrome"),
+    ):
+        hits = sorted(glob.glob(pat))
+        if hits:
+            return hits[-1]
+    return None
+
+
+def ensure_chromium() -> str | None:
+    """Return a chromium path; if none and apt is available, best-effort install one (marker-tracked
+    so uninstall only removes a browser WE added). The renderer needs a real Chromium."""
+    p = _chrome_path()
+    if p:
+        return p
+    if shutil.which("apt-get"):
+        try:
+            _log("installing chromium for the Canvas graph view (first run)...")
+            subprocess.run(["apt-get", "update", "-qq"], capture_output=True, timeout=300)
+            subprocess.run(
+                ["apt-get", "install", "-y", "chromium"], capture_output=True, text=True, timeout=900,
+                env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"},
+            )
+        except Exception as e:
+            _log(f"chromium install error: {e}")
+        p = _chrome_path()
+        if p:
+            try:
+                open(os.path.join(_plugin_dir(), INSTALL_MARKER_CHROME), "w").write("chromium installed by the gitnexus plugin\n")
+            except Exception:
+                pass
+    if not p:
+        _log("no chromium available; the Canvas graph view needs one (the MCP tools still work)")
+    return p
+
+
+def _http_ready(port: int) -> bool:
+    try:
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=2)
+        return True
+    except urllib.error.HTTPError:
+        return True
+    except Exception:
+        return False
+
+
+def _proc_running(pattern: str) -> bool:
+    try:
+        return subprocess.run(["pgrep", "-f", pattern], capture_output=True).returncode == 0
+    except Exception:
+        return False
+
+
+def ensure_serving(cfg: dict | None = None) -> bool:
+    """Start `gitnexus serve` if it isn't already answering on the port. Idempotent (HTTP probe)."""
+    cfg = cfg if cfg is not None else _config()
+    port = _serve_port(cfg)
+    if _http_ready(port):
+        return True
+    gx = shutil.which("gitnexus")
+    if not gx:
+        return False
+    try:
+        log = open(os.path.join(_plugin_dir(), "serve.log"), "ab")
+        subprocess.Popen(
+            [gx, "serve", "--port", str(port), "--host", "127.0.0.1"],
+            stdout=log, stderr=log, start_new_session=True,
+        )
+    except Exception as e:
+        _log(f"could not start `gitnexus serve`: {e}")
+        return False
+    for _ in range(40):  # cold start; wait until it serves HTTP
+        if _http_ready(port):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def _renderer_match(cfg: dict) -> str:
+    return f"remote-debugging-port={_cdp_port(cfg)}"
+
+
+def _relaunch_spec_path() -> str:
+    return os.path.join(_runtime_dir(), "relaunch.json")
+
+
+def launch_renderer(cfg: dict) -> bool:
+    """Launch a headless Chromium pointed at the local gitnexus web UI, with CDP enabled, so the
+    bridge can screencast it. Idempotent (matches the --remote-debugging-port cmdline). Leaves a
+    relaunch spec so the bridge's watchdog can resurrect it if it dies."""
+    if _proc_running(_renderer_match(cfg)):
+        return True
+    chrome = ensure_chromium()
+    if not chrome:
+        return False
+    rt = _runtime_dir()
+    udir = os.path.join(rt, "chrome")
+    os.makedirs(udir, exist_ok=True)
+    for lock in ("SingletonLock", "SingletonSocket", "SingletonCookie"):
+        try:
+            os.remove(os.path.join(udir, lock))
+        except Exception:
+            pass
+    # --enable-unsafe-swiftshader: render WebGL graph views under headless/no-gpu instead of blanking.
+    argv = [
+        chrome, "--headless=new", "--no-sandbox", "--disable-gpu", "--enable-unsafe-swiftshader",
+        f"--remote-debugging-port={_cdp_port(cfg)}", f"--user-data-dir={udir}",
+        "--window-size=1440,900", "--disable-dev-shm-usage",
+        f"http://localhost:{_serve_port(cfg)}/",
+    ]
+    env = {**os.environ, "HOME": rt}
+    try:
+        spec = {"argv": argv, "env": {k: str(v) for k, v in env.items()},
+                "cfg_dir": udir, "log": os.path.join(rt, "chrome.log"),
+                "proc_match": _renderer_match(cfg)}
+        os.makedirs(rt, exist_ok=True)
+        with open(_relaunch_spec_path(), "w") as f:
+            json.dump(spec, f)
+        log = open(os.path.join(rt, "chrome.log"), "ab")
+        subprocess.Popen(argv, env=env, stdout=log, stderr=log, start_new_session=True, cwd=rt)
+    except Exception as e:
+        _log(f"could not launch the graph renderer: {e}")
+        return False
+    for _ in range(40):  # wait for CDP to come up
+        if _http_ready(_cdp_port(cfg)):
+            return True
+        time.sleep(0.5)
+    return _proc_running(_renderer_match(cfg))
+
+
+def _bridge_running(cfg: dict) -> bool:
+    return _proc_running(f"screencast.py --cdp-port {_cdp_port(cfg)}")
+
+
+def launch_bridge(cfg: dict) -> bool:
+    """Start the CDP screencast bridge (binary frames + input + reconnect + renderer watchdog)."""
+    port = _bridge_port(cfg)
+    if _bridge_running(cfg):
+        return _http_ready(port)
+    rt = _runtime_dir()
+    os.makedirs(rt, exist_ok=True)
+    try:
+        bridge = os.path.join(_plugin_dir(), "helpers", "screencast.py")
+        log = open(os.path.join(rt, "screencast.log"), "ab")
+        subprocess.Popen(
+            [sys.executable, bridge, "--cdp-port", str(_cdp_port(cfg)),
+             "--listen-host", "127.0.0.1", "--listen-port", str(port),
+             "--relaunch-spec", _relaunch_spec_path()],
+            stdout=log, stderr=log, start_new_session=True, cwd=rt,
+        )
+    except Exception as e:
+        _log(f"could not start the screencast bridge: {e}")
+        return False
+    for _ in range(40):
+        if _http_ready(port):
+            return True
+        time.sleep(0.5)
+    return False
+
+
+def start_surface_session(cfg: dict | None = None) -> str | None:
+    """Ensure gitnexus + its web server + the headless renderer + the screencast bridge are up,
+    register the bridge with A0's virtual-desktop gateway, and return the proxied surface URL.
+    Idempotent. Runs in the web-server process so register_session lands in the in-process registry."""
+    cfg = cfg if cfg is not None else _config()
+    if not ensure_binary():
+        return None
+    if not ensure_serving(cfg):
+        return None
+    if not launch_renderer(cfg):
+        return None
+    if not launch_bridge(cfg):
+        return None
+    try:
+        from helpers import virtual_desktop
+
+        virtual_desktop.register_session(
+            token=SURFACE_TOKEN, host="127.0.0.1", port=_bridge_port(cfg),
+            owner="gitnexus", title="GitNexus",
+        )
+        return virtual_desktop.session_url(SURFACE_TOKEN, title="GitNexus")
+    except Exception as e:
+        _log(f"could not register the GitNexus surface session: {e}")
+        return None
+
+
+def stop_surface_session(cfg: dict | None = None) -> None:
+    """Stop the surface (unregister the gateway session). The serve/renderer/bridge are left
+    running — idle/cheap and makes re-open instant; cleanup() stops everything on uninstall."""
+    try:
+        from helpers import virtual_desktop
+
+        virtual_desktop.unregister_session(SURFACE_TOKEN)
+    except Exception:
+        pass
+
+
 def ensure(force: bool = False) -> None:
-    """Install gitnexus, then register its MCP server. Best-effort.
+    """Install gitnexus and register its MCP server. (The Canvas surface — serve + headless
+    renderer + bridge — starts lazily when the user opens it, not at boot.)
 
     force=True (install hook) forces an MCP reapply so the server connects even over a stale
     entry; force=False (every boot) is idempotent and won't churn MCP.
@@ -199,6 +444,31 @@ def ensure(force: bool = False) -> None:
 
 
 def cleanup() -> None:
-    """Uninstall: remove the MCP registration, and uninstall the gitnexus CLI if WE installed it."""
+    """Uninstall: unregister MCP + the surface session, stop the bridge/renderer/serve, and
+    uninstall the gitnexus CLI (and chromium) if WE installed them."""
     unregister_mcp()
+    cfg = _config()
+    try:
+        from helpers import virtual_desktop
+
+        virtual_desktop.unregister_session(SURFACE_TOKEN)
+    except Exception:
+        pass
+    for pat in (f"screencast.py --cdp-port {_cdp_port(cfg)}", _renderer_match(cfg), "gitnexus serve"):
+        try:
+            subprocess.run(["pkill", "-f", pat], capture_output=True, timeout=15)
+        except Exception:
+            pass
+    # uninstall chromium only if WE apt-installed it
+    marker_chrome = os.path.join(_plugin_dir(), INSTALL_MARKER_CHROME)
+    if os.path.exists(marker_chrome) and shutil.which("apt-get"):
+        try:
+            subprocess.run(["apt-get", "purge", "-y", "chromium"], capture_output=True, text=True,
+                           timeout=300, env={**os.environ, "DEBIAN_FRONTEND": "noninteractive"})
+        except Exception:
+            pass
+        try:
+            os.remove(marker_chrome)
+        except Exception:
+            pass
     _uninstall_binary_if_ours()

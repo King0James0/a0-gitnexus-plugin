@@ -1,0 +1,11 @@
+<div
+  class="right-canvas-surface-panel gitnexus-canvas-surface"
+  data-surface-id="gitnexus"
+  :class="{
+    'is-active': $store.rightCanvas?.isSurfaceVisible('gitnexus'),
+    'is-mounted': $store.rightCanvas?.isSurfaceRendered('gitnexus')
+  }"
+  :aria-hidden="(!$store.rightCanvas?.isSurfaceVisible('gitnexus')).toString()"
+>
+  <x-component path="/plugins/gitnexus/webui/gitnexus-panel.html" mode="canvas"></x-component>
+</div>

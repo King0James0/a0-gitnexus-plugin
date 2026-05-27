@@ -5,6 +5,7 @@ Gives Agent Zero code-graph superpowers by installing the [GitNexus](https://www
 ## What it can do
 
 - **Code-graph queries** (`gitnexus-code-graph` skill) — once enabled, GitNexus's MCP tools appear in the agent's toolset: list indexed repos, find a symbol's callers, gauge the blast radius of an edit, map routes/tools, and run Cypher queries over the graph.
+- **Visual code graph in the Canvas** (`gitnexus-canvas-view` skill) — adds a **GitNexus** icon to Agent Zero's right-side Canvas rail. Click it to explore an indexed repository's graph (symbols, dependencies, execution flows), file tree, and AI explorer right inside Agent Zero. Because GitNexus's web UI is local-only (it talks to its server over `localhost`), the plugin renders it in a **headless Chromium inside the container** and streams that view to the Canvas — everything stays on `127.0.0.1`, nothing is exposed externally. (Needs a Chromium in the environment; the plugin installs one via `apt` if none is present. The MCP tools work regardless.)
 
 ## Setup
 
@@ -32,6 +33,9 @@ Agent Zero spawns `gitnexus mcp` and exposes its tools to the agent. Because A0 
 |---|---|---|
 | `gitnexus_version` | `latest` | npm version of the gitnexus CLI to install, or a pinned version. |
 | `mcp_server_name` | `gitnexus` | Key under `mcp_servers.mcpServers` this plugin registers. |
+| `serve_port` | `4747` | Local port for the `gitnexus serve` graph web UI (what the in-container Chromium loads; bound to `127.0.0.1`). |
+| `cdp_port` | `9223` | The headless Chromium's remote-debugging port that the screencast bridge connects to. |
+| `bridge_port` | `14601` | The screencast bridge port registered with A0's Canvas gateway. |
 
 ## Uninstalling
 

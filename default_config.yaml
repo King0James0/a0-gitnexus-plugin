@@ -6,3 +6,10 @@ gitnexus_version: latest
 
 # Key under mcp_servers.mcpServers that this plugin registers (and removes on uninstall).
 mcp_server_name: gitnexus
+
+# Canvas surface (route 2 — screencast). The gitnexus web UI is local-only (it connects to its
+# server at localhost over Server-Sent Events), so we render it in a headless Chromium INSIDE the
+# container and screencast that to the Canvas. All three ports bind 127.0.0.1 only.
+serve_port: 4747    # `gitnexus serve` graph web UI (what the in-container Chromium loads)
+cdp_port: 9223      # the headless Chromium's CDP/remote-debugging port (bridge connects here)
+bridge_port: 14601  # the screencast bridge (registered with A0's /desktop gateway; != obsidian's)
