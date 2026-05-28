@@ -7,8 +7,12 @@ config.json
 .toggle-1
 .installed-gitnexus
 .installed-gitnexus-chromium
+.reindex-task-uuid
 serve.log
+reindex.log
 # Canvas surface runtime (chromium user-data, logs, relaunch spec) — never commit
 runtime/
 __pycache__/
 *.pyc
+
+dist/

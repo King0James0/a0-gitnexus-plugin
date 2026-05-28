@@ -13,3 +13,19 @@ mcp_server_name: gitnexus
 serve_port: 4747    # `gitnexus serve` graph web UI (what the in-container Chromium loads)
 cdp_port: 9223      # the headless Chromium's CDP/remote-debugging port (bridge connects here)
 bridge_port: 14601  # the screencast bridge (registered with A0's /desktop gateway; != obsidian's)
+
+# Scheduled commit-aware re-index. On install the plugin registers an Agent Zero ScheduledTask
+# named "GitNexus weekly re-index" that runs helpers/reindex.py on this schedule. The task only
+# re-indexes already-indexed git repos whose HEAD moved since they were last indexed (it never
+# discovers or indexes new repos). Edit the schedule/time/cadence directly in the Scheduler UI
+# after install — the plugin won't overwrite your changes; these values are just the install-time
+# default. `schedule` fields are standard crontab (minute hour day month weekday).
+reindex:
+  enabled: true
+  schedule:
+    minute: "0"
+    hour: "6"
+    day: "*"
+    month: "*"
+    weekday: "0"   # 0 = Sunday  ->  weekly, Sundays at 06:00
+  timezone: ""     # "" = Agent Zero's configured timezone

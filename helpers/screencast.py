@@ -278,7 +278,8 @@ def _page_ws_url(cdp_port: int) -> str | None:
 class Bridge:
     """Owns the (reconnecting) CDP link and fans frames out to browser clients."""
 
-    def __init__(self, cdp_port: int, relaunch_spec: str | None = None) -> None:
+    def __init__(self, cdp_port: int, relaunch_spec: str | None = None,
+                 reload_on_change: str | None = None) -> None:
         self.cdp_port = cdp_port
         self.cdp: CDP | None = None
         self.clients: set[Client] = set()
@@ -287,6 +288,8 @@ class Bridge:
         self.size: tuple[int, int] | None = None  # last client-requested render size
         self.relaunch_spec = relaunch_spec       # path to setup.py's relaunch.json (watchdog)
         self._last_relaunch = 0.0
+        self.reload_on_change = reload_on_change  # registry file to watch -> reload page on change
+        self._reload_mtime = None                 # mtime the page currently reflects
         self._loop = asyncio.get_event_loop()
         self._input_q: asyncio.Queue = asyncio.Queue()
 
@@ -392,6 +395,66 @@ class Bridge:
                 except Exception:
                     pass
 
+    # --- auto-refresh on index change ------------------------------------------------------
+    def _reg_mtime(self):
+        try:
+            return os.path.getmtime(self.reload_on_change) if self.reload_on_change else None
+        except Exception:
+            return None
+
+    async def reload_page(self) -> None:
+        """Reload the page through our OWN CDP session, then RE-INJECT the wrap CSS once the new
+        document has loaded. addScriptToEvaluateOnNewDocument runs before the SPA renders, so its
+        <style> gets clobbered — only a post-load Runtime.evaluate sticks (same as the initial
+        connect). And a reload driven by a separate CDP client loses the inject entirely because it
+        contends for the single page-target socket — which is why this must live in the bridge."""
+        cdp = self.cdp
+        if not cdp:
+            return
+        try:
+            await cdp.call("Page.reload", {"ignoreCache": True})
+            for _ in range(12):  # wait (up to ~6s) for the reloaded document to finish
+                await asyncio.sleep(0.5)
+                try:
+                    r = await cdp.call("Runtime.evaluate",
+                                       {"expression": "document.readyState", "returnByValue": True})
+                    if r.get("result", {}).get("value") == "complete":
+                        break
+                except Exception:
+                    break
+            await cdp.call("Runtime.evaluate", {"expression": _INJECT_CSS_JS})  # re-apply wrap
+            if self.size:  # the Emulation override can drop on reload
+                await cdp.set_window_size(*self.size)
+            await cdp.start_screencast()  # a reload interrupts the screencast
+        except Exception:
+            pass
+
+    async def maybe_reload_for_registry(self) -> None:
+        """If the watched registry changed since the page last loaded AND someone's watching, reload
+        so a newly indexed/re-indexed repo shows up. Called on each new client connect."""
+        if not self.reload_on_change or not self.cdp or not self.clients:
+            return
+        m = self._reg_mtime()
+        if m is not None and m != self._reload_mtime:
+            await self.reload_page()
+            self._reload_mtime = m
+
+    async def registry_watch(self) -> None:
+        """Poll the gitnexus registry; when it changes while the surface is being viewed, reload the
+        page (via reload_page, so wrap/size survive). If it changes while nobody's watching, the
+        baseline is left stale so the next client connect triggers the refresh."""
+        if not self.reload_on_change:
+            return
+        self._reload_mtime = self._reg_mtime()  # baseline = what the freshly-loaded page reflects
+        while True:
+            await asyncio.sleep(2.0)
+            m = self._reg_mtime()
+            if m is None or m == self._reload_mtime:
+                continue
+            if self.cdp and self.clients:
+                await self.reload_page()
+                self._reload_mtime = m
+
     # --- input -----------------------------------------------------------------------------
     async def dispatch(self, ev: dict) -> None:
         cdp = self.cdp
@@ -458,12 +521,16 @@ async def main() -> None:
     ap.add_argument("--listen-host", default="127.0.0.1")
     ap.add_argument("--listen-port", type=int, default=14600)
     ap.add_argument("--relaunch-spec", default=None)
+    ap.add_argument("--reload-on-change", default=None,
+                    help="path to a registry file; reload the page when it changes (auto-refresh)")
     args = ap.parse_args()
 
-    bridge = Bridge(args.cdp_port, relaunch_spec=args.relaunch_spec)
+    bridge = Bridge(args.cdp_port, relaunch_spec=args.relaunch_spec,
+                    reload_on_change=args.reload_on_change)
     asyncio.create_task(bridge.connect_loop())
     asyncio.create_task(bridge.keepalive())
     asyncio.create_task(bridge.input_worker())
+    asyncio.create_task(bridge.registry_watch())
 
     async def index(_request):
         return web.Response(text=CLIENT_HTML, content_type="text/html")
@@ -481,6 +548,8 @@ async def main() -> None:
                 await bridge.cdp.start_screencast()  # force a fresh frame for the new client
             except Exception:
                 pass
+        # if a repo was indexed while this surface was closed, refresh now so it shows on open
+        await bridge.maybe_reload_for_registry()
         try:
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:

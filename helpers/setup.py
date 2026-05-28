@@ -33,6 +33,12 @@ INSTALL_MARKER = ".installed-gitnexus"
 SURFACE_TOKEN = "gitnexus"
 INSTALL_MARKER_CHROME = ".installed-gitnexus-chromium"  # set if WE apt-installed chromium
 
+# Scheduled commit-aware re-index. Registered as an A0 ScheduledTask on install (visible/editable
+# in the scheduler UI) that just runs helpers/reindex.py. The task's uuid is stored in a marker so
+# uninstall can remove it even if the user renamed it in the UI.
+REINDEX_TASK_NAME = "GitNexus weekly re-index"
+REINDEX_TASK_MARKER = ".reindex-task-uuid"
+
 
 def _log(msg: str) -> None:
     try:
@@ -78,7 +84,15 @@ def _server_name(cfg: dict | None = None) -> str:
 
 
 def ensure_binary() -> bool:
-    """Ensure the gitnexus CLI is on PATH; install via npm -g if missing. Returns availability."""
+    """Ensure the gitnexus CLI is on PATH; install via npm -g if missing. Returns availability.
+
+    We install with ONNXRUNTIME_NODE_INSTALL=skip. gitnexus depends on `onnxruntime-node` only for
+    its optional `--embeddings` feature (which this plugin never uses), and that dependency's native
+    installer downloads a NuGet runtime that fails to unpack in some environments — which would
+    abort the whole `npm i -g` and leave no binary. onnxruntime-node's own documented skip switch
+    makes its install step exit early, so the REQUIRED native deps still build normally (the
+    @ladybugdb graph engine — without which `gitnexus serve`/`analyze` crash — and the tree-sitter
+    grammars), and the MCP server, analysis, and the Canvas surface all work."""
     if shutil.which("gitnexus"):
         return True
     npm = shutil.which("npm")
@@ -87,10 +101,11 @@ def ensure_binary() -> bool:
         return False
     ver = str(_config().get("gitnexus_version", "latest")).strip() or "latest"
     pkg = "gitnexus" if ver == "latest" else f"gitnexus@{ver}"
+    env = {**os.environ, "ONNXRUNTIME_NODE_INSTALL": "skip"}
     try:
-        _log(f"installing {pkg} via npm -g (first run can take a minute)...")
+        _log(f"installing {pkg} via npm -g (onnx embeddings skipped; first run can take a minute)...")
         res = subprocess.run(
-            [npm, "install", "-g", pkg], capture_output=True, text=True, timeout=600
+            [npm, "install", "-g", pkg], capture_output=True, text=True, timeout=600, env=env
         )
         if res.returncode != 0:
             _log("npm install failed: " + (res.stderr.strip() or res.stdout.strip())[:300])
@@ -376,11 +391,13 @@ def launch_bridge(cfg: dict) -> bool:
     os.makedirs(rt, exist_ok=True)
     try:
         bridge = os.path.join(_plugin_dir(), "helpers", "screencast.py")
+        registry = os.path.expanduser("~/.gitnexus/registry.json")
         log = open(os.path.join(rt, "screencast.log"), "ab")
         subprocess.Popen(
             [sys.executable, bridge, "--cdp-port", str(_cdp_port(cfg)),
              "--listen-host", "127.0.0.1", "--listen-port", str(port),
-             "--relaunch-spec", _relaunch_spec_path()],
+             "--relaunch-spec", _relaunch_spec_path(),
+             "--reload-on-change", registry],
             stdout=log, stderr=log, start_new_session=True, cwd=rt,
         )
     except Exception as e:
@@ -428,6 +445,111 @@ def stop_surface_session(cfg: dict | None = None) -> None:
         virtual_desktop.unregister_session(SURFACE_TOKEN)
     except Exception:
         pass
+
+
+# --- Scheduled re-index task (register on install, remove on uninstall) -------------------------
+
+def _reindex_marker_path() -> str:
+    return os.path.join(_plugin_dir(), REINDEX_TASK_MARKER)
+
+
+def _write_reindex_marker(uuid: str) -> None:
+    try:
+        with open(_reindex_marker_path(), "w") as f:
+            f.write(uuid)
+    except Exception:
+        pass
+
+
+def _read_reindex_marker() -> str:
+    try:
+        with open(_reindex_marker_path()) as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+def _delete_reindex_marker() -> None:
+    try:
+        os.remove(_reindex_marker_path())
+    except Exception:
+        pass
+
+
+async def register_reindex_task() -> None:
+    """Register the recurring re-index ScheduledTask (idempotent). Runs only on install, so a user
+    who edits the schedule or deletes the task keeps their choice. Best-effort: logs, never raises."""
+    cfg = _config().get("reindex") or {}
+    if not cfg.get("enabled", True):
+        return
+    try:
+        from helpers.task_scheduler import TaskScheduler, ScheduledTask, TaskSchedule
+    except Exception as e:
+        _log(f"scheduler unavailable; skipping re-index task: {e}")
+        return
+    try:
+        sched = TaskScheduler.get()
+        await sched.reload()
+        if sched.find_task_by_name(REINDEX_TASK_NAME):
+            # already present (e.g. double install) — point the marker at it and stop
+            existing = sched.find_task_by_name(REINDEX_TASK_NAME)[0]
+            _write_reindex_marker(existing.uuid)
+            return
+        sc = cfg.get("schedule") or {}
+        schedule = TaskSchedule(
+            minute=str(sc.get("minute", "0")),
+            hour=str(sc.get("hour", "6")),
+            day=str(sc.get("day", "*")),
+            month=str(sc.get("month", "*")),
+            weekday=str(sc.get("weekday", "0")),
+        )
+        tz = (cfg.get("timezone") or "").strip() or None
+        helper = os.path.join(_plugin_dir(), "helpers", "reindex.py")
+        task = ScheduledTask.create(
+            name=REINDEX_TASK_NAME,
+            system_prompt=(
+                "You are a maintenance task runner. Run exactly the command in the message using "
+                "the code execution tool (terminal runtime), then report only its final summary "
+                "line. Take no other actions and ask no questions."
+            ),
+            prompt=f"Run this command and report its output:\n\npython3 {helper}",
+            schedule=schedule,
+            timezone=tz,
+        )
+        await sched.add_task(task)
+        await sched.save()
+        _write_reindex_marker(task.uuid)
+        _log(f"registered scheduled re-index task ({schedule.to_crontab()})")
+    except Exception as e:
+        _log(f"could not register re-index task: {e}")
+
+
+async def unregister_reindex_task() -> None:
+    """Remove the re-index ScheduledTask (by stored uuid, falling back to name) and drop the
+    marker. Best-effort: logs, never raises."""
+    try:
+        from helpers.task_scheduler import TaskScheduler
+    except Exception:
+        _delete_reindex_marker()
+        return
+    try:
+        sched = TaskScheduler.get()
+        await sched.reload()
+        uuid = _read_reindex_marker()
+        removed = False
+        if uuid:
+            await sched.remove_task_by_uuid(uuid)
+            removed = True
+        elif sched.find_task_by_name(REINDEX_TASK_NAME):
+            await sched.remove_task_by_name(REINDEX_TASK_NAME)
+            removed = True
+        if removed:
+            await sched.save()
+            _log("removed scheduled re-index task")
+    except Exception as e:
+        _log(f"could not remove re-index task: {e}")
+    finally:
+        _delete_reindex_marker()
 
 
 def ensure(force: bool = False) -> None:
