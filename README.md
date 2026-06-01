@@ -2,6 +2,12 @@
 
 Gives Agent Zero code-graph superpowers by installing the [GitNexus](https://www.npmjs.com/package/gitnexus) CLI and registering its MCP server, so the agent can analyze a codebase — dependencies, impact/blast-radius, symbol callers, route/tool maps, and ad-hoc graph (Cypher) queries — before it changes anything.
 
+## Support
+
+If this plugin is useful to you, you can support the developer.
+
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/king0james0) [![Solana](https://img.shields.io/badge/Solana-9945FF?style=for-the-badge&logo=solana&logoColor=white)](https://solscan.io/account/HXrzPqgcxBR9LctTVdTF6xCLpah4hQwyYEevsQ98QvTo) [![Ethereum](https://img.shields.io/badge/Ethereum-3C3C3D?style=for-the-badge&logo=ethereum&logoColor=white)](https://etherscan.io/address/0xfF61681F907fA8DB39C1d23cbdbE89D24A94De17) [![Bitcoin](https://img.shields.io/badge/Bitcoin-F7931A?style=for-the-badge&logo=bitcoin&logoColor=white)](https://mempool.space/address/bc1qyr6x7kmxpy6ke0xutkxg90f30658fnr39h0d7r)
+
 ## What it can do
 
 - **Code-graph queries** (`gitnexus-code-graph` skill) — once enabled, GitNexus's MCP tools appear in the agent's toolset: list indexed repos, find a symbol's callers, gauge the blast radius of an edit, map routes/tools, and run Cypher queries over the graph.
