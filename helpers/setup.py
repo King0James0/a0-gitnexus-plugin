@@ -217,7 +217,32 @@ def unregister_mcp() -> None:
 # --- Canvas surface (route 2: gitnexus serve + headless chromium + CDP screencast bridge) --------
 
 def _runtime_dir() -> str:
-    return os.path.join(_plugin_dir(), "runtime")
+    # Out of the plugin folder on purpose: A0 watches plugin roots recursively, and the headless
+    # Chromium profile + logs under here churn the filesystem constantly. Kept inside the plugin
+    # dir, that churn could trip A0's startup watchdog registration into a deadlock. Living under
+    # usr/ (persistent volume, NOT a watched plugin root) keeps the canvas session across restarts;
+    # cleanup() removes it on uninstall.
+    from helpers import files
+
+    return files.get_abs_path("usr", f"{PLUGIN_NAME}-runtime")
+
+
+def _migrate_legacy_runtime() -> None:
+    """One-time move of a pre-1.2.5 runtime dir from inside the (recursively watched) plugin
+    folder to the out-of-tree location, so the Chromium profile/session carries over. Best-effort."""
+    try:
+        legacy = os.path.join(_plugin_dir(), "runtime")
+        new = _runtime_dir()
+        if os.path.isdir(legacy) and not os.path.exists(new):
+            os.makedirs(os.path.dirname(new), exist_ok=True)
+            shutil.move(legacy, new)
+            _log(f"migrated runtime dir out of the plugin folder -> {new}")
+        # a stray pre-1.2.5 serve.log also lived in the plugin dir; it's now written under runtime/
+        legacy_log = os.path.join(_plugin_dir(), "serve.log")
+        if os.path.isfile(legacy_log):
+            os.remove(legacy_log)
+    except Exception as e:
+        _log(f"runtime migration skipped: {e}")
 
 
 def _serve_port(cfg: dict | None = None) -> int:
@@ -311,7 +336,9 @@ def ensure_serving(cfg: dict | None = None) -> bool:
     if not gx:
         return False
     try:
-        log = open(os.path.join(_plugin_dir(), "serve.log"), "ab")
+        rt = _runtime_dir()
+        os.makedirs(rt, exist_ok=True)
+        log = open(os.path.join(rt, "serve.log"), "ab")
         subprocess.Popen(
             [gx, "serve", "--port", str(port), "--host", "127.0.0.1"],
             stdout=log, stderr=log, start_new_session=True,
@@ -559,6 +586,7 @@ def ensure(force: bool = False) -> None:
     force=True (install hook) forces an MCP reapply so the server connects even over a stale
     entry; force=False (every boot) is idempotent and won't churn MCP.
     """
+    _migrate_legacy_runtime()
     if not ensure_binary():
         _log("gitnexus CLI unavailable; skipping MCP registration")
         return
@@ -594,3 +622,8 @@ def cleanup() -> None:
         except Exception:
             pass
     _uninstall_binary_if_ours()
+    # remove the out-of-tree runtime dir (regenerable canvas state — Chromium profile, logs)
+    try:
+        shutil.rmtree(_runtime_dir(), ignore_errors=True)
+    except Exception:
+        pass
