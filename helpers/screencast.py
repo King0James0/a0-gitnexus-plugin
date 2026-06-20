@@ -1,8 +1,8 @@
-"""Obsidian Canvas screencast bridge (CDP -> browser), modelled on the Browser surface.
+"""gitnexus Canvas screencast bridge (CDP -> browser), modelled on the Browser surface.
 
-Runs as a standalone process. Connects to a running Obsidian (Electron) over the Chrome DevTools
+Runs as a standalone process. Connects to a running headless Chromium renderer over the Chrome DevTools
 Protocol, streams the page as JPEG frames to a browser client over a websocket, and relays mouse /
-keyboard / resize back into Obsidian via CDP Input + Emulation. Served over plain HTTP+WS so it can
+keyboard / resize back into the renderer via CDP Input + Emulation. Served over plain HTTP+WS so it can
 sit behind A0's generic /desktop gateway (HTTP + WS reverse proxy).
 
 Resilience (the whole point of this rewrite): the CDP page session can die or stall during normal
@@ -31,7 +31,7 @@ import websockets
 from aiohttp import web, WSMsgType
 
 CLIENT_HTML = """<!doctype html>
-<html><head><meta charset="utf-8"><title>Obsidian</title>
+<html><head><meta charset="utf-8"><title>gitnexus</title>
 <style>
   html,body{margin:0;height:100%;background:#1e1e1e;overflow:hidden}
   #wrap{position:absolute;inset:0;display:flex;cursor:default}
@@ -134,7 +134,7 @@ function connect(){
   ws.onerror = () => { try { ws.close(); } catch(e){} };
 }
 
-// map a DOM event on the <img> to page CSS pixels in Obsidian
+// map a DOM event on the <img> to page CSS pixels in the renderer
 function pt(ev){
   const r = img.getBoundingClientRect();
   const sx = (natW || img.naturalWidth || r.width) / r.width;
@@ -294,7 +294,7 @@ class CDP:
         await self.call("Runtime.evaluate", {"expression": _NAV_GUARD_JS})
 
     async def set_window_size(self, width: int, height: int) -> None:
-        # Electron's Browser.getWindowForTarget returns no windowId, so resize the *render viewport*
+        # Headless Chromium's Browser.getWindowForTarget returns no windowId, so resize the *render viewport*
         # via Emulation instead — the page reflows to it and screencast captures at that size.
         await self.call("Emulation.setDeviceMetricsOverride", {
             "width": width, "height": height, "deviceScaleFactor": 1, "mobile": False,
@@ -469,7 +469,7 @@ class Bridge:
 
     # --- CDP supervision -------------------------------------------------------------------
     def _ensure_app_alive(self) -> None:
-        """Watchdog: if Obsidian isn't running (crashed, or a stray quit) and we have a relaunch
+        """Watchdog: if the renderer isn't running (crashed, or a stray quit) and we have a relaunch
         spec, resurrect it. Throttled so we don't spawn repeatedly while it boots."""
         if not self.relaunch_spec or (self._loop.time() - self._last_relaunch) < 12:
             return
@@ -477,7 +477,7 @@ class Bridge:
             spec = json.load(open(self.relaunch_spec))
         except Exception:
             return
-        match = spec.get("proc_match") or "obsidian --no-sandbox --disable-gpu"
+        match = spec.get("proc_match") or "chromium --remote-debugging-port"
         try:
             running = subprocess.run(["pgrep", "-f", match], capture_output=True).returncode == 0
         except Exception:
@@ -496,16 +496,16 @@ class Bridge:
             subprocess.Popen(spec["argv"], env=spec.get("env") or None,
                              stdout=log, stderr=log, start_new_session=True,
                              cwd=os.path.dirname(cfg_dir) or None)
-            print("[watchdog] relaunched Obsidian", flush=True)
+            print("[watchdog] relaunched the renderer", flush=True)
         except Exception as e:
             print(f"[watchdog] relaunch failed: {e}", flush=True)
 
     async def connect_loop(self) -> None:
-        """Forever: (re)discover the Obsidian page target, connect, stream; on drop, retry.
+        """Forever: (re)discover the renderer page target, connect, stream; on drop, retry.
         If the app is gone, the watchdog relaunches it so the surface self-heals."""
         while True:
             ws_url = None
-            for i in range(120):  # tolerate Obsidian not being ready / mid-relaunch
+            for i in range(120):  # tolerate the renderer not being ready / mid-relaunch
                 ws_url = _page_ws_url(self.cdp_port)
                 if ws_url:
                     break
@@ -548,7 +548,7 @@ class Bridge:
             await asyncio.sleep(0.3)  # brief backoff, then rediscover + reconnect
 
     async def keepalive(self) -> None:
-        """CDP screencast only emits on repaint; idle Obsidian is static. Force a frame ~1/s while
+        """CDP screencast only emits on repaint; idle renderer is static. Force a frame ~1/s while
         someone is watching, but only when the view has actually gone quiet (don't pile onto an
         already-busy renderer, e.g. an animating graph view)."""
         while True:
