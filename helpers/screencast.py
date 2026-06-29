@@ -386,7 +386,8 @@ _NAV_GUARD_JS = (
 )
 
 # App guard injected into the gitnexus SPA (same channel as the nav-guard): (1) HIDE upstream CTAs
-# that are dead/irrelevant in the embedded canvas — Nexus AI + its settings (not wired to the user's
+# that are dead/irrelevant in the embedded canvas — Nexus AI, its settings, and the AI wiki output-
+# language selector (English/简体中文 — only affects gitnexus's own RAG agent, not wired to the user's
 # models) and the Star/Sponsor links (external nav is blocked anyway); (2) RECOVER if the app blanks
 # — a graph-view crash (e.g. software-WebGL failing) or a failed clone/index — by overlaying a short
 # message and returning to the repo picker so the user can retry, surfacing the specific request
@@ -407,6 +408,9 @@ _APP_GUARD_JS = (
     "var lt=t.toLowerCase();"
     "if(lt.indexOf('swe-bench')>=0||lt.indexOf('swebench')>=0||lt.indexOf('api credit')>=0)"
     "(e.closest('a,button')||e).style.display='none';});"
+    "root.querySelectorAll('label,select').forEach(function(e){"
+    "var al=(e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||'');"
+    "if(al.indexOf('Select language')>=0)(e.closest('label')||e).style.display='none';});"
     "}catch(_){}}"
     "function sweep(){hide(document);}sweep();"
     "var pend=false;function sched(){if(pend)return;pend=true;setTimeout(function(){pend=false;sweep();},300);}"

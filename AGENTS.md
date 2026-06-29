@@ -38,8 +38,9 @@ uninstall-clean.
    Only screencast pixels cross A0's gateway; the SSE-over-localhost SPA is the whole reason for the
    screencast route. The bridge's nav-guard (`_NAV_GUARD_JS` + `Bridge._on_navigated` snap-back) keeps
    the headless browser pinned to the app origin — keep both guards intact. The bridge also injects an
-   **app-guard** (`_APP_GUARD_JS`: hides the upstream Nexus AI / Star / Sponsor CTAs that are dead in
-   the embedded canvas, and on a blank/crash overlays a message + returns to the repo picker) and runs
+   **app-guard** (`_APP_GUARD_JS`: hides upstream chrome that's dead in the embedded canvas — Nexus AI,
+   its AI Settings gear, the Star / Sponsor CTAs, and the AI output-language selector — and on a
+   blank/crash overlays a message + returns to the repo picker) and runs
    a **WebGL self-heal** (`webgl_health` → `_kill_renderer` relaunches the renderer when software-WebGL
    dies — the cause of graph-view black screens). Keep these intact.
 5. **The runtime dir lives OUT of the watched plugin tree.** `_runtime_dir()` returns
