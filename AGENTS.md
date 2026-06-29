@@ -59,7 +59,10 @@ uninstall-clean.
    "GitNexus weekly re-index" is renamed in place (uuid kept). disabled → remove it. Runs on
    `install`, on boot (`startup_migration/_55`), and on `save_plugin_config` (live toggle, no restart).
    The reused task context is reset each run by `monologue_start/_56` (gated on `reindex.reset_context`
-   default on + the task ctx id; mirrors github's `_80`) so it can't grow unbounded. The WORKER
+   default on + the task ctx id; mirrors github's `_80`) so it can't grow unbounded; `_56` ALSO drops the
+   code-exec shell (`_cet_state`) every run (UNGATED) so reindex.py runs on a shell bound to THAT run's
+   event loop — a manual web-API run uses a different loop than the one that created the reused context's
+   shell, and reusing it raises `<Queue> is bound to a different event loop`. The WORKER
    (`reindex.py`) is **refresh-changed-only**: NEVER discovers/indexes new repos, only re-runs `analyze`
    on already-indexed git work-trees whose HEAD moved (`--skip-agents-md` keeps this DOX pure).
 7. **`reindex.py` is pure stdlib — no Agent Zero imports.** It runs as a bare script
@@ -117,6 +120,11 @@ uninstall-clean.
   command," with the real work in the deterministic helper. `ScheduledTask.check_schedule()` is a
   STATELESS ~60s cron window (no `last_run` catch-up — `job_loop` ticks 60s; setting `last_run` is a
   no-op for cron tasks); `find_task_by_name` is a SUBSTRING match (probe full names).
+- Code-exec shells are LOOP-BOUND + persisted: `code_execution_tool.prepare_state` stores the shell in
+  agent-data `_cet_state`, and the tty session's `asyncio.Queue` binds to the event loop it is first read
+  on. A context reused across loops — e.g. a MANUAL scheduled-task run via the web API (each request runs
+  on its own loop) — must reset `_cet_state` per run, or `read_output` raises `<Queue> is bound to a
+  different event loop`. `prepare_state` rebuilds a fresh shell when `_cet_state` is None (the `_56` path).
 - Canvas auto-refresh: the bridge's `registry_watch` reloads the page when the gitnexus registry
   changes — it must watch the registry `gitnexus serve` ACTUALLY writes (`<runtime>/.gitnexus/
   registry.json`, since serve runs with `HOME=<runtime>`), NOT the bridge process's own `~/.gitnexus`

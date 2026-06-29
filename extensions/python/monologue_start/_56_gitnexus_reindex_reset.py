@@ -9,6 +9,13 @@ MUST run at monologue_START: scheduler-driven runs never set `context.task`, so 
 `monologue_end` / `message_loop_end` for them — only `monologue_start`. Gated on the re-index context
 id (.reindex-task-uuid) and the `reindex.reset_context` toggle (default on). Mirrors the github-watch
 `_80` reset.
+
+Also (ALWAYS, independent of `reset_context`): drops the persisted code-exec shell (`_cet_state`) so
+each run's reindex.py executes on a shell bound to THAT run's event loop. The re-index context is
+reused across runs; a manual (web-API) run executes on a DIFFERENT event loop than the one that
+created the shell, and reusing it raises "<Queue> is bound to a different event loop" (the tty
+session's asyncio.Queue is loop-bound). A fresh shell per run avoids it. This is a correctness fix,
+not a preference, so it runs regardless of the history-reset toggle.
 """
 
 import os
@@ -31,6 +38,37 @@ def _reindex_ctx_id() -> str:
         return ""
 
 
+def _reset_code_exec_shell(agent) -> None:
+    """Drop A0's persisted code-exec shell (agent-data `_cet_state`) for this run so the next
+    code_execution builds a fresh shell bound to the CURRENT event loop (avoids the cross-loop
+    asyncio.Queue RuntimeError on a reused scheduled-task context). Best-effort SYNC kill of the old
+    child (loop-safe — never awaits the stale loop) so we don't leak its subprocess, then clear the
+    state. Fully guarded: a failure here must never break the run."""
+    try:
+        st = agent.get_data("_cet_state")
+    except Exception:
+        st = None
+    shells = getattr(st, "shells", None) if st else None
+    if shells:
+        try:
+            wraps = list(shells.values())
+        except Exception:
+            wraps = []
+        for w in wraps:
+            try:
+                inner = getattr(w, "session", None)    # LocalInteractiveSession (or SSH session)
+                tty = getattr(inner, "session", None)  # TTYSession (local) — has a sync kill()
+                killer = getattr(tty, "kill", None) or getattr(inner, "kill", None)
+                if callable(killer):
+                    killer()                           # sync, best-effort, loop-safe
+            except Exception:
+                pass
+    try:
+        agent.set_data("_cet_state", None)
+    except Exception:
+        pass
+
+
 class GitnexusReindexReset(Extension):
 
     async def execute(self, loop_data=None, **kwargs):
@@ -41,6 +79,11 @@ class GitnexusReindexReset(Extension):
         rid = _reindex_ctx_id()
         if not rid or not ctx or getattr(ctx, "id", None) != rid:
             return
+
+        # Correctness — ALWAYS, before the reset_context gate below: give this run a fresh code-exec
+        # shell bound to the current event loop (see _reset_code_exec_shell).
+        _reset_code_exec_shell(agent)
+
         try:
             from helpers import plugins
             cfg = (plugins.get_plugin_config(PLUGIN_NAME) or {}).get("reindex") or {}
