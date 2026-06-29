@@ -12,8 +12,9 @@ A self-contained A0 plugin (`gitnexus`, id in `plugin.yaml`). It gives the agent
 (1) installing the `gitnexus` npm CLI and registering its `gitnexus mcp` stdio server so the MCP tools
 appear in the toolset; (2) adding a **GitNexus Canvas surface** that screencasts the CLI's local-only
 `gitnexus serve` web UI (rendered in an in-container headless Chromium, streamed over A0's `/desktop`
-gateway); and (3) registering a weekly **commit-aware re-index** ScheduledTask that refreshes
-already-indexed repos whose HEAD moved. No API key. Publishable, model-agnostic, uninstall-clean.
+gateway); and (3) registering an **opt-in** (off by default) **commit-aware re-index** ScheduledTask
+that refreshes already-indexed repos whose HEAD moved. No API key. Publishable, model-agnostic,
+uninstall-clean.
 
 ## HARD INVARIANTS — never violate
 1. **Setup is best-effort — it must NEVER block A0 startup.** Every entry point in `helpers/setup.py`
@@ -36,22 +37,33 @@ already-indexed repos whose HEAD moved. No API key. Publishable, model-agnostic,
    127.0.0.1`). The CDP port is an unauthenticated full-control debug channel — exposing it is RCE.
    Only screencast pixels cross A0's gateway; the SSE-over-localhost SPA is the whole reason for the
    screencast route. The bridge's nav-guard (`_NAV_GUARD_JS` + `Bridge._on_navigated` snap-back) keeps
-   the headless browser pinned to the app origin — keep both guards intact.
+   the headless browser pinned to the app origin — keep both guards intact. The bridge also injects an
+   **app-guard** (`_APP_GUARD_JS`: hides the upstream Nexus AI / Star / Sponsor CTAs that are dead in
+   the embedded canvas, and on a blank/crash overlays a message + returns to the repo picker) and runs
+   a **WebGL self-heal** (`webgl_health` → `_kill_renderer` relaunches the renderer when software-WebGL
+   dies — the cause of graph-view black screens). Keep these intact.
 5. **The runtime dir lives OUT of the watched plugin tree.** `_runtime_dir()` returns
    `usr/gitnexus-runtime` (the Chromium profile, logs, `relaunch.json`). A0 watches plugin roots
    recursively; the Chromium profile churns the filesystem and would trip A0's startup-watchdog
    registration into a deadlock if kept under the plugin dir. Never relocate runtime state back inside
    the plugin folder; `cleanup()` removes this dir on uninstall.
-6. **The scheduled task is install-once; never overwrite the user's edits.** `register_reindex_task()`
-   runs only from the `install()` hook and no-ops if a task by name already exists — so a user who
-   edited the schedule, disabled, or deleted it keeps that choice. The re-index WORKER (`reindex.py`)
-   is **refresh-changed-only**: it NEVER discovers or indexes new repos, only re-runs `analyze` on
-   already-indexed git work-trees whose HEAD moved. It re-indexes with `--skip-agents-md` to keep this
-   DOX pure (gitnexus appends its block to `CLAUDE.md`, not here).
+6. **The scheduled task is OPT-IN (off by default) and reconciled to its toggle.**
+   `reconcile_reindex_task()` keys on `reindex.enabled`: enabled → ensure the task exists (renaming a
+   pre-1.2.8 "GitNexus weekly re-index" in place, preserving uuid/schedule); disabled → remove it. It
+   runs on `install`, on boot (`startup_migration/_55`), and on `save_plugin_config` (live toggle, no
+   restart) — mirroring the github-watch plugin. Once a task exists it never overwrites the user's
+   schedule edits. The re-index WORKER (`reindex.py`) is **refresh-changed-only**: it NEVER discovers
+   or indexes new repos, only re-runs `analyze` on already-indexed git work-trees whose HEAD moved
+   (with `--skip-agents-md` to keep this DOX pure — gitnexus appends its block to `CLAUDE.md`).
 7. **`reindex.py` is pure stdlib — no Agent Zero imports.** It runs as a bare script
    (`python3 .../helpers/reindex.py`) launched by the agent's code-exec tool from the ScheduledTask;
    there is NO background thread, so it can never double-fire. Keep it framework-free and best-effort
    (per-repo try/except, bounded subprocess timeouts) so one bad repo can't fail the run.
+8. **The re-index runs exactly once per cycle.** `tool_execute_before/_30_gitnexus_reindex_once` blocks
+   a weak utility model from re-running `reindex.py` within one scheduled run (RepairableException;
+   keyed on the run's `last_user_message.id` so it self-resets each cycle; scoped to the task's OWN
+   context id so a manual run in a normal chat is unaffected). `helpers/run_once.py` holds the
+   sys-attached state. Always on (no config knob).
 
 ## Build discipline
 - **Framework boundary.** Only `helpers/setup.py`, `hooks.py`, the `api/` handler, and the
@@ -93,7 +105,13 @@ already-indexed repos whose HEAD moved. No API key. Publishable, model-agnostic,
 - Scheduled tasks: `helpers.task_scheduler` (`TaskScheduler.get()` → `reload()` → `find_task_by_name`
   / `add_task` / `remove_task_by_uuid` → `save()`); A0 runs every ScheduledTask by feeding its prompt
   to the agent loop (no other execution path) — that's why the re-index task's only action is "run this
-  command," with the real work in the deterministic helper.
+  command," with the real work in the deterministic helper. `ScheduledTask.check_schedule()` is a
+  STATELESS ~60s cron window (no `last_run` catch-up — `job_loop` ticks 60s; setting `last_run` is a
+  no-op for cron tasks); `find_task_by_name` is a SUBSTRING match (probe full names).
+- Canvas auto-refresh: the bridge's `registry_watch` reloads the page when the gitnexus registry
+  changes — it must watch the registry `gitnexus serve` ACTUALLY writes (`<runtime>/.gitnexus/
+  registry.json`, since serve runs with `HOME=<runtime>`), NOT the bridge process's own `~/.gitnexus`
+  (which is `/root/.gitnexus` and never exists). Wiring the wrong path silently disables auto-refresh.
 - Canvas gateway: `helpers.virtual_desktop.register_session(token, host, port, ...)` +
   `session_url(token)` proxy a loopback HTTP+WS service through A0's `/desktop` gateway; the gateway may
   split/merge large WS messages, so the bridge uses length-prefixed binary records (never rely on WS

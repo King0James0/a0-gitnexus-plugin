@@ -60,10 +60,13 @@ INSTALL_MARKER = ".installed-gitnexus"
 SURFACE_TOKEN = "gitnexus"
 INSTALL_MARKER_CHROME = ".installed-gitnexus-chromium"  # set if WE apt-installed chromium
 
-# Scheduled commit-aware re-index. Registered as an A0 ScheduledTask on install (visible/editable
-# in the scheduler UI) that just runs helpers/reindex.py. The task's uuid is stored in a marker so
-# uninstall can remove it even if the user renamed it in the UI.
-REINDEX_TASK_NAME = "GitNexus weekly re-index"
+# Scheduled commit-aware re-index. An A0 ScheduledTask (visible/editable in the scheduler UI) that
+# just runs helpers/reindex.py. OPT-IN: off by default (reindex.enabled); toggling it in config
+# creates/removes the task live (mirrors the github-watch plugin). The task's uuid is stored in a
+# marker so uninstall can remove it even if the user renamed it in the UI.
+REINDEX_TASK_NAME = "GitNexus re-index"
+# Prior name (pre-1.2.8) — renamed in place on reconcile so existing installs migrate cleanly.
+REINDEX_TASK_NAME_OLD = "GitNexus weekly re-index"
 REINDEX_TASK_MARKER = ".reindex-task-uuid"
 
 
@@ -446,7 +449,11 @@ def launch_bridge(cfg: dict) -> bool:
     os.makedirs(rt, exist_ok=True)
     try:
         bridge = os.path.join(_plugin_dir(), "helpers", "screencast.py")
-        registry = os.path.expanduser("~/.gitnexus/registry.json")
+        # Watch the registry gitnexus ACTUALLY writes: `gitnexus serve` runs with HOME=rt (see
+        # ensure_serving), so its registry lives under rt/.gitnexus — not the bridge process's own
+        # ~/.gitnexus (which is /root/.gitnexus and never exists). Watching the wrong path silently
+        # disabled the auto-refresh-after-index; this is the one-line fix that re-enables it.
+        registry = os.path.join(rt, ".gitnexus", "registry.json")
         log = open(os.path.join(rt, "screencast.log"), "ab")
         subprocess.Popen(
             [sys.executable, bridge, "--cdp-port", str(_cdp_port(cfg)),
@@ -531,12 +538,15 @@ def _delete_reindex_marker() -> None:
         pass
 
 
-async def register_reindex_task() -> None:
-    """Register the recurring re-index ScheduledTask (idempotent). Runs only on install, so a user
-    who edits the schedule or deletes the task keeps their choice. Best-effort: logs, never raises."""
-    cfg = _config().get("reindex") or {}
-    if not cfg.get("enabled", True):
-        return
+async def reconcile_reindex_task(cfg_reindex: dict | None = None) -> None:
+    """Create/remove the re-index ScheduledTask to match config — OPT-IN, off by default.
+
+    Mirrors the github-watch plugin: enabled -> ensure the task exists (renaming the pre-1.2.8
+    "GitNexus weekly re-index" task IN PLACE if found, preserving the user's schedule/uuid);
+    disabled -> remove it. Idempotent; best-effort (logs, never raises). Runs on install, on boot,
+    and the moment the plugin config is saved."""
+    cfg = cfg_reindex if cfg_reindex is not None else (_config().get("reindex") or {})
+    enabled = bool(cfg.get("enabled", False))  # opt-in (the pre-1.2.8 default was on)
     try:
         from helpers.task_scheduler import TaskScheduler, ScheduledTask, TaskSchedule
     except Exception as e:
@@ -545,11 +555,28 @@ async def register_reindex_task() -> None:
     try:
         sched = TaskScheduler.get()
         await sched.reload()
-        if sched.find_task_by_name(REINDEX_TASK_NAME):
-            # already present (e.g. double install) — point the marker at it and stop
-            existing = sched.find_task_by_name(REINDEX_TASK_NAME)[0]
-            _write_reindex_marker(existing.uuid)
+        # find_task_by_name is a substring match; the new name is NOT a substring of the old, so
+        # these two probes are unambiguous. Prefer an already-renamed task, else the legacy one.
+        current = (sched.find_task_by_name(REINDEX_TASK_NAME)
+                   or sched.find_task_by_name(REINDEX_TASK_NAME_OLD))
+
+        if not enabled:
+            if current:
+                await sched.remove_task_by_name(current[0].name)
+                await sched.save()
+                _log(f"re-index disabled — removed task '{current[0].name}'")
+            _delete_reindex_marker()
             return
+
+        if current:
+            t = current[0]
+            if t.name == REINDEX_TASK_NAME_OLD:  # migrate the legacy name in place (keep schedule/uuid)
+                t.update(name=REINDEX_TASK_NAME)
+                await sched.save()
+                _log(f"renamed re-index task '{REINDEX_TASK_NAME_OLD}' -> '{REINDEX_TASK_NAME}'")
+            _write_reindex_marker(t.uuid)
+            return
+
         sc = cfg.get("schedule") or {}
         schedule = TaskSchedule(
             minute=str(sc.get("minute", "0")),
@@ -574,9 +601,33 @@ async def register_reindex_task() -> None:
         await sched.add_task(task)
         await sched.save()
         _write_reindex_marker(task.uuid)
-        _log(f"registered scheduled re-index task ({schedule.to_crontab()})")
+        _log(f"registered re-index task ({schedule.to_crontab()})")
     except Exception as e:
-        _log(f"could not register re-index task: {e}")
+        _log(f"could not reconcile re-index task: {e}")
+
+
+async def register_reindex_task() -> None:
+    """Install-hook entry: reconcile the re-index task to the current config (opt-in)."""
+    await reconcile_reindex_task()
+
+
+def ensure_reindex() -> None:
+    """Sync reconcile entry (boot extension): reconcile to the current config. Best-effort."""
+    try:
+        import asyncio
+        asyncio.run(reconcile_reindex_task())
+    except Exception as e:
+        _log(f"could not reconcile re-index task on boot: {e}")
+
+
+def reconcile_reindex_from(cfg_reindex: dict | None) -> None:
+    """Sync reconcile entry for the save_plugin_config hook (mirrors github watch_schedule.ensure_from).
+    Reconciles straight from the incoming config so a UI toggle takes effect with no restart."""
+    try:
+        import asyncio
+        asyncio.run(reconcile_reindex_task(cfg_reindex or {}))
+    except Exception as e:
+        _log(f"could not reconcile re-index task on save: {e}")
 
 
 async def unregister_reindex_task() -> None:

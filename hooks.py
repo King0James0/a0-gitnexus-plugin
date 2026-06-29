@@ -24,3 +24,18 @@ async def uninstall():
 
     await setup.unregister_reindex_task()
     setup.cleanup()
+
+
+def save_plugin_config(settings=None, default=None, **kwargs):
+    """Apply the re-index opt-in toggle the moment config is saved in the UI (no restart needed) —
+    mirrors the github plugin. Called BEFORE the new config is written, so we reconcile straight from
+    the incoming settings. Must return the settings so the framework persists them."""
+    cfg = settings if isinstance(settings, dict) else default
+    try:
+        from usr.plugins.gitnexus.helpers import setup
+
+        if isinstance(cfg, dict):
+            setup.reconcile_reindex_from(cfg.get("reindex") or {})
+    except Exception:
+        pass
+    return cfg

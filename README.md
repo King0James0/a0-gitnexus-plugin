@@ -12,7 +12,7 @@ If this plugin is useful to you, you can support the developer.
 
 - **Code-graph queries** (`gitnexus-code-graph` skill) — once enabled, GitNexus's MCP tools appear in the agent's toolset: list indexed repos, find a symbol's callers, gauge the blast radius of an edit, map routes/tools, and run Cypher queries over the graph.
 - **Visual code graph in the Canvas** (`gitnexus-canvas-view` skill) — adds a **GitNexus** icon to Agent Zero's right-side Canvas rail. Click it to explore an indexed repository's graph (symbols, dependencies, execution flows), file tree, and AI explorer right inside Agent Zero. Because GitNexus's web UI is local-only (it talks to its server over `localhost`), the plugin renders it in a **headless Chromium inside the container** and streams that view to the Canvas — everything stays on `127.0.0.1`, nothing is exposed externally. (Needs a Chromium in the environment; the plugin installs one via `apt` if none is present. The MCP tools work regardless.) The repo list **auto-refreshes**: when you index or re-index a repo, the surface reloads itself within a couple of seconds (and on open) so the new/updated repo appears — no manual refresh, and the code word-wrap is preserved. The reload only happens when the index actually changed, so it won't disturb your view otherwise. You can also **select text in the surface and `Ctrl/Cmd+C`** to copy it to your own machine's clipboard (the code view and detail panels are made selectable for this), and **`Ctrl/Cmd+V`** to paste your local clipboard into a field on the surface. It's cross-platform; copying uses the async Clipboard API on `https`/`localhost` with a legacy fallback for plain-`http` LAN access.
-- **Scheduled re-index** — keeps your indexed graphs fresh. On install the plugin registers a recurring Agent Zero scheduled task (**"GitNexus weekly re-index"**, Sundays 06:00 by default) that re-runs `gitnexus analyze` on any repo you've **already** indexed whose latest commit has changed since it was last indexed. It does **not** discover or index new repos — that's your call. See [Keeping indexes fresh](#keeping-indexes-fresh).
+- **Scheduled re-index** — keeps your indexed graphs fresh. Opt-in (off by default) — turn it on and the plugin registers a recurring Agent Zero scheduled task (**"GitNexus re-index"**, Sundays 06:00 by default) that re-runs `gitnexus analyze` on any repo you've **already** indexed whose latest commit has changed since it was last indexed. It does **not** discover or index new repos — that's your call. See [Keeping indexes fresh](#keeping-indexes-fresh).
 
 ## Setup
 
@@ -36,9 +36,9 @@ Agent Zero spawns `gitnexus mcp` and exposes its tools to the agent. Because A0 
 
 ## Keeping indexes fresh
 
-A GitNexus index is a snapshot — it reflects a repo at the commit it was analyzed at, so it drifts out of date as you keep committing. To keep it current the plugin registers a scheduled task on install:
+A GitNexus index is a snapshot — it reflects a repo at the commit it was analyzed at, so it drifts out of date as you keep committing. To keep it current the plugin can register a scheduled task — **opt-in, off by default.** Turn `reindex.enabled` on in the plugin config and the task is registered; turn it off and it's removed — the toggle takes effect immediately, no restart:
 
-- **Task name:** `GitNexus weekly re-index` (visible and editable under Agent Zero's **Scheduler**).
+- **Task name:** `GitNexus re-index` (visible and editable under Agent Zero's **Scheduler**).
 - **Default schedule:** Sundays at 06:00, in Agent Zero's configured timezone.
 - **What it does each run:** reads the GitNexus registry and, for every repo you've already indexed that is a git work-tree, compares the repo's current `HEAD` against the commit it was last indexed at. If they differ, it runs an incremental `gitnexus analyze` on that repo; if not, it skips it (so an idle week does almost no work).
 - **What it does *not* do:** it never indexes new repos. You decide what to index (`gitnexus analyze <path>`); the task only keeps current what you already chose.
@@ -48,16 +48,16 @@ A GitNexus index is a snapshot — it reflects a repo at the commit it was analy
 The work and the schedule are deliberately separated:
 
 - **A deterministic helper does all the work.** `helpers/reindex.py` is plain Python — it reads the registry, does the commit comparison, and runs `gitnexus analyze` on the repos that changed. No model/LLM is involved in the indexing logic itself.
-- **The scheduled task is purely the visible trigger.** The `GitNexus weekly re-index` task carries no logic; its instruction is just *"run `helpers/reindex.py` and report the summary."* It exists so the schedule is something you can see, edit, disable, or delete from the Scheduler UI.
+- **The scheduled task is purely the visible trigger.** The `GitNexus re-index` task carries no logic; its instruction is just *"run `helpers/reindex.py` and report the summary."* It exists so the schedule is something you can see, edit, disable, or delete from the Scheduler UI.
 - **Triggering goes through the agent loop.** Agent Zero runs every scheduled task by handing its prompt to the agent (that's the only execution path A0 has), so when the task fires the agent's single action is to run the helper via its code-execution tool. There is **no background thread** — nothing runs the helper except this task, so it never double-fires.
 - **Cost:** because the trigger passes through the agent, each run spends a small amount of the model's budget on that one "run this command" hop — *not* on the indexing, which is the deterministic helper's job.
 
 ### Editing the schedule
 
-Change the cadence, time, or timezone whenever you like — the plugin sets the schedule only **once at install** and never overwrites your edits (and if you delete the task, it stays deleted):
+Change the cadence, time, or timezone whenever you like — once the task exists the plugin never overwrites your edits, and re-enabling won't recreate a task you've edited (turning `reindex.enabled` off removes it):
 
 1. Open Agent Zero and go to the **Scheduler** (the tasks/clock panel).
-2. Find the task named **`GitNexus weekly re-index`** and open it for editing.
+2. Find the task named **`GitNexus re-index`** and open it for editing.
 3. Edit the **schedule** — it's a standard 5-field crontab (`minute hour day month weekday`). Examples:
    - `0 6 * * 0` — weekly, Sundays at 06:00 (the default)
    - `0 3 * * *` — every day at 03:00

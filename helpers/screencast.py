@@ -385,6 +385,57 @@ _NAV_GUARD_JS = (
     "if(x.origin!==O)return null;}}catch(_){return null;}return _o.apply(window,arguments);};})();"
 )
 
+# App guard injected into the gitnexus SPA (same channel as the nav-guard): (1) HIDE upstream CTAs
+# that are dead/irrelevant in the embedded canvas — Nexus AI + its settings (not wired to the user's
+# models) and the Star/Sponsor links (external nav is blocked anyway); (2) RECOVER if the app blanks
+# — a graph-view crash (e.g. software-WebGL failing) or a failed clone/index — by overlaying a short
+# message and returning to the repo picker so the user can retry, surfacing the specific request
+# error when one was seen. A (debounced) MutationObserver keeps the hide applied across re-renders.
+# Pure single-quoted JS + DOM construction (no innerHTML) so it stays escaping-safe in this string.
+_APP_GUARD_JS = (
+    "(function(){"
+    "if(window.__a0gxGuard)return;window.__a0gxGuard=true;"
+    "var ORIGIN=location.origin,recovering=false,lastErr='';"
+    "function hide(root){try{"
+    "root.querySelectorAll('a').forEach(function(a){var h=a.href||'';"
+    "if(h.indexOf('abhigyanpatwari/GitNexus')>=0||h.indexOf('/sponsors/')>=0)a.style.display='none';});"
+    "root.querySelectorAll('button').forEach(function(b){var t=(b.textContent||'').trim();"
+    "var al=b.getAttribute('aria-label')||'';if(t==='Nexus AI'||al==='AI Settings')b.style.display='none';});"
+    "root.querySelectorAll('a,button,span,div,p').forEach(function(e){"
+    "if(e.children&&e.children.length>2)return;var t=(e.textContent||'');if(t.length>=160)return;"
+    "var lt=t.toLowerCase();"
+    "if(lt.indexOf('swe-bench')>=0||lt.indexOf('swebench')>=0||lt.indexOf('api credit')>=0)"
+    "(e.closest('a,button')||e).style.display='none';});"
+    "}catch(_){}}"
+    "function sweep(){hide(document);}sweep();"
+    "var pend=false;function sched(){if(pend)return;pend=true;setTimeout(function(){pend=false;sweep();},300);}"
+    "try{new MutationObserver(sched).observe(document.documentElement||document,{childList:true,subtree:true});}catch(_){}"
+    "document.addEventListener('DOMContentLoaded',sweep);"
+    "var sc=0,si=setInterval(function(){sweep();if(++sc>20)clearInterval(si);},500);"
+    "document.addEventListener('click',function(e){try{var a=e.target&&e.target.closest&&e.target.closest('a');"
+    "if(a){var h=a.href||'';if(h.indexOf('abhigyanpatwari/GitNexus')>=0||h.indexOf('/sponsors/')>=0){"
+    "e.preventDefault();e.stopImmediatePropagation();}}}catch(_){}}, true);"
+    "function rel(u){return u&&(u.indexOf('analyz')>=0||u.indexOf('clone')>=0||u.indexOf('ingest')>=0||u.indexOf('repo')>=0||u.indexOf('index')>=0);}"
+    "try{var _f=window.fetch;window.fetch=function(){var u='';try{u=(typeof arguments[0]==='string')?arguments[0]:(arguments[0]&&arguments[0].url)||'';}catch(_){}"
+    "return _f.apply(this,arguments).then(function(r){try{if(r&&!r.ok&&rel(String(u))){"
+    "r.clone().text().then(function(b){var m='';try{var j=JSON.parse(b);m=j.error||j.message||j.detail||'';}catch(_){m=(b||'').slice(0,200);}"
+    "lastErr=('Request failed ('+r.status+'). '+(m||'')).trim();}).catch(function(){lastErr='Request failed ('+r.status+').';});}}catch(_){}"
+    "return r;}).catch(function(e){try{if(rel(String(u)))lastErr='Network error: '+((e&&e.message)||e);}catch(_){}throw e;});};}catch(_){}"
+    "function goHome(why){if(recovering)return;recovering=true;try{"
+    "var d=document.createElement('div');d.style.cssText='position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;background:#1e1e1e;color:#ddd;font:14px/1.6 system-ui,sans-serif;text-align:center;padding:24px';"
+    "var box=document.createElement('div');"
+    "var h1=document.createElement('div');h1.style.cssText='font-size:15px;margin-bottom:8px';h1.textContent='Could not load that repository';"
+    "var m1=document.createElement('div');m1.style.cssText='color:#9aa;max-width:520px';m1.textContent=why||'';"
+    "var f1=document.createElement('div');f1.style.cssText='color:#7a8;margin-top:14px';f1.textContent='Returning to the repository list...';"
+    "box.appendChild(h1);box.appendChild(m1);box.appendChild(f1);d.appendChild(box);(document.body||document.documentElement).appendChild(d);"
+    "}catch(_){}setTimeout(function(){try{location.assign(ORIGIN+'/');}catch(_){location.href='/';}},1800);}"
+    "var had=false,streak=0;"
+    "setInterval(function(){if(recovering)return;var r=document.getElementById('root');var empty=!r||r.childElementCount===0;"
+    "if(!empty){had=true;streak=0;return;}streak++;"
+    "if(streak>=3&&(had||lastErr))goHome(lastErr||'The graph view failed to load \\u2014 the repository may be private or the URL wrong, or the renderer hit an error.');},1000);"
+    "})();"
+)
+
 
 def _page_ws_url(cdp_port: int) -> str | None:
     try:
@@ -500,6 +551,22 @@ class Bridge:
         except Exception as e:
             print(f"[watchdog] relaunch failed: {e}", flush=True)
 
+    def _kill_renderer(self) -> None:
+        """Kill the renderer process so connect_loop's watchdog relaunches it FRESH — the only way to
+        recover a dead GPU/WebGL process (software-GL EGL init can fail under load; a fresh process
+        gets a fresh GPU process). Matches the renderer by the relaunch spec's proc_match."""
+        match = None
+        try:
+            if self.relaunch_spec:
+                match = (json.load(open(self.relaunch_spec)) or {}).get("proc_match")
+        except Exception:
+            match = None
+        match = match or f"remote-debugging-port={self.cdp_port}"
+        try:
+            subprocess.run(["pkill", "-f", match], capture_output=True)
+        except Exception:
+            pass
+
     async def connect_loop(self) -> None:
         """Forever: (re)discover the renderer page target, connect, stream; on drop, retry.
         If the app is gone, the watchdog relaunches it so the surface self-heals."""
@@ -531,6 +598,11 @@ class Bridge:
                 # wrap the code inspector + enable text selection now + on any future page reload
                 await cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source": _INJECT_CSS_JS})
                 await cdp.call("Runtime.evaluate", {"expression": _INJECT_CSS_JS})
+                # app guard: hide dead upstream CTAs + recover-to-picker on a blank/crash. addScript
+                # re-runs it on every new document (survives reloads); Runtime.evaluate applies it to
+                # the already-loaded page now. The guard self-guards against double-install.
+                await cdp.call("Page.addScriptToEvaluateOnNewDocument", {"source": _APP_GUARD_JS})
+                await cdp.call("Runtime.evaluate", {"expression": _APP_GUARD_JS})
                 await cdp.enable_clipboard_relay()  # remote copy -> local clipboard relay
                 await cdp.enable_nav_guard()        # block external-link navigation
                 if self.size:  # a fresh page session loses the prior Emulation override
@@ -560,6 +632,39 @@ class Bridge:
                 except Exception:
                     pass
 
+    async def webgl_health(self) -> None:
+        """Heal a dead GPU: the graph view needs software-WebGL, whose ANGLE/SwiftShader EGL init can
+        fail under load and stay dead for the renderer's whole session, blanking the graph. While
+        someone is watching, probe WebGL availability; on a SUSTAINED failure relaunch the renderer
+        (a fresh process gets a fresh GPU). Conservative: a few consecutive failures (skips the
+        post-(re)launch GPU-init transient) + a cooldown so it can't thrash."""
+        probe = ("(function(){try{var c=document.createElement('canvas');"
+                 "return !!(c.getContext('webgl2')||c.getContext('webgl'));}catch(e){return false;}})()")
+        consecutive = 0
+        last_heal = 0.0
+        while True:
+            await asyncio.sleep(8.0)
+            cdp = self.cdp
+            if not cdp or not self.clients:
+                consecutive = 0
+                continue
+            try:
+                r = await cdp.call("Runtime.evaluate",
+                                   {"expression": probe, "returnByValue": True}, timeout=5)
+                ok = bool(r.get("result", {}).get("value"))
+            except Exception:
+                ok = True  # can't tell -> never risk a needless relaunch
+            if ok:
+                consecutive = 0
+                continue
+            consecutive += 1
+            if consecutive < 3 or (self._loop.time() - last_heal) < 90:
+                continue
+            last_heal = self._loop.time()
+            consecutive = 0
+            print("[webgl-heal] WebGL unavailable — relaunching the renderer for a fresh GPU", flush=True)
+            self._kill_renderer()
+
     # --- auto-refresh on index change ------------------------------------------------------
     def _reg_mtime(self):
         try:
@@ -588,6 +693,7 @@ class Bridge:
                 except Exception:
                     break
             await cdp.call("Runtime.evaluate", {"expression": _INJECT_CSS_JS})  # re-apply wrap
+            await cdp.call("Runtime.evaluate", {"expression": _APP_GUARD_JS})   # re-apply app guard
             if self.size:  # the Emulation override can drop on reload
                 await cdp.set_window_size(*self.size)
             await cdp.start_screencast()  # a reload interrupts the screencast
@@ -700,6 +806,7 @@ async def main() -> None:
     asyncio.create_task(bridge.keepalive())
     asyncio.create_task(bridge.input_worker())
     asyncio.create_task(bridge.registry_watch())
+    asyncio.create_task(bridge.webgl_health())
 
     async def index(_request):
         return web.Response(text=CLIENT_HTML, content_type="text/html")
