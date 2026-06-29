@@ -3,7 +3,7 @@
 <body>
 <div x-data>
   <template x-if="config">
-    <div x-init="if (!config.reindex) config.reindex = { enabled: false }">
+    <div x-init="if (!config.reindex) config.reindex = {}">
       <div class="section-title">GitNexus — Scheduled re-index</div>
       <div class="section-description">
         Keep your indexed code graphs fresh. When on, the plugin registers an Agent Zero scheduled task
@@ -16,16 +16,63 @@
       <div class="field">
         <div class="field-label">
           <div class="field-title">Scheduled re-index</div>
-          <div class="field-description">
-            Register the recurring re-index task. Default schedule: <b>weekly, Sundays at 06:00</b> (Agent
-            Zero's timezone). Once it's on you can change the time/cadence anytime in Agent Zero's
-            <b>Scheduler</b> &mdash; find the task named <code>GitNexus re-index</code>.
-          </div>
+          <div class="field-description">Register the recurring re-index task. Off removes it.</div>
         </div>
         <div class="field-control">
           <label class="toggle">
             <input type="checkbox" x-model="config.reindex.enabled"
               x-init="if (config.reindex.enabled === undefined || config.reindex.enabled === null) config.reindex.enabled = false" />
+            <span class="toggler"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="field" x-show="config.reindex.enabled">
+        <div class="field-label">
+          <div class="field-title">Interval</div>
+          <div class="field-description">
+            How often the re-index runs. Daily/weekly/monthly run at 06:00. For anything else, use a
+            custom schedule below.
+          </div>
+        </div>
+        <div class="field-control">
+          <select x-model="config.reindex.interval"
+            x-init="if (!config.reindex.interval) config.reindex.interval = '7d'">
+            <option value="6h">Every 6 hours</option>
+            <option value="12h">Every 12 hours</option>
+            <option value="1d">Daily</option>
+            <option value="7d">Weekly</option>
+            <option value="30d">Monthly</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field" x-show="config.reindex.enabled">
+        <div class="field-label">
+          <div class="field-title">Custom schedule (cron)</div>
+          <div class="field-description">
+            Advanced &mdash; a 5-field cron expression (<code>minute hour day month weekday</code>) for
+            schedules the presets can't express. <b>Overrides the interval above when set.</b> Example:
+            <code>0 3 * * *</code> = daily at 03:00. Leave blank to use the interval.
+          </div>
+        </div>
+        <div class="field-control">
+          <input type="text" placeholder="(none — use the interval above)" x-model="config.reindex.cron" />
+        </div>
+      </div>
+
+      <div class="field" x-show="config.reindex.enabled">
+        <div class="field-label">
+          <div class="field-title">Reset context each run</div>
+          <div class="field-description">
+            Clear the task's conversation after each run so its context doesn't grow unbounded over time
+            (each run starts fresh). The summary still goes to the Scheduler record. On by default.
+          </div>
+        </div>
+        <div class="field-control">
+          <label class="toggle">
+            <input type="checkbox" x-model="config.reindex.reset_context"
+              x-init="if (config.reindex.reset_context === undefined || config.reindex.reset_context === null) config.reindex.reset_context = true" />
             <span class="toggler"></span>
           </label>
         </div>

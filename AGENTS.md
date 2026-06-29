@@ -47,14 +47,17 @@ uninstall-clean.
    recursively; the Chromium profile churns the filesystem and would trip A0's startup-watchdog
    registration into a deadlock if kept under the plugin dir. Never relocate runtime state back inside
    the plugin folder; `cleanup()` removes this dir on uninstall.
-6. **The scheduled task is OPT-IN (off by default) and reconciled to its toggle.**
-   `reconcile_reindex_task()` keys on `reindex.enabled`: enabled → ensure the task exists (renaming a
-   pre-1.2.8 "GitNexus weekly re-index" in place, preserving uuid/schedule); disabled → remove it. It
-   runs on `install`, on boot (`startup_migration/_55`), and on `save_plugin_config` (live toggle, no
-   restart) — mirroring the github-watch plugin. Once a task exists it never overwrites the user's
-   schedule edits. The re-index WORKER (`reindex.py`) is **refresh-changed-only**: it NEVER discovers
-   or indexes new repos, only re-runs `analyze` on already-indexed git work-trees whose HEAD moved
-   (with `--skip-agents-md` to keep this DOX pure — gitnexus appends its block to `CLAUDE.md`).
+6. **The scheduled task is OPT-IN (off by default), config-driven, reconciled to its toggle.**
+   `reconcile_reindex_task()` keys on `reindex.enabled`: enabled → ensure the task exists and set its
+   cadence from config — `_reindex_schedule()` maps `reindex.cron` (a valid custom cron wins) or the
+   `reindex.interval` preset (6h/12h/1d/7d/30d) to a TaskSchedule, applied on EVERY reconcile (config
+   is the SOURCE OF TRUTH, like github-watch — Scheduler edits get overwritten); the pre-1.2.8
+   "GitNexus weekly re-index" is renamed in place (uuid kept). disabled → remove it. Runs on
+   `install`, on boot (`startup_migration/_55`), and on `save_plugin_config` (live toggle, no restart).
+   The reused task context is reset each run by `monologue_start/_56` (gated on `reindex.reset_context`
+   default on + the task ctx id; mirrors github's `_80`) so it can't grow unbounded. The WORKER
+   (`reindex.py`) is **refresh-changed-only**: NEVER discovers/indexes new repos, only re-runs `analyze`
+   on already-indexed git work-trees whose HEAD moved (`--skip-agents-md` keeps this DOX pure).
 7. **`reindex.py` is pure stdlib — no Agent Zero imports.** It runs as a bare script
    (`python3 .../helpers/reindex.py`) launched by the agent's code-exec tool from the ScheduledTask;
    there is NO background thread, so it can never double-fire. Keep it framework-free and best-effort
@@ -92,9 +95,11 @@ uninstall-clean.
   pure (the re-index worker already passes that flag).
 
 ## Verified A0 mechanics (don't re-derive — confirm against the LIVE instance; versions move constantly)
-- Hooks/seams: `install()`/`uninstall()` in `hooks.py` (async — A0 runs coroutine hooks via
-  `asyncio.run`, which is why the scheduler calls can be awaited there) · `startup_migration/_50`
-  (`ensure()` every boot — re-installs the CLI/MCP into the ephemeral venv) · the `api/` ApiHandler
+- Hooks/seams: `install()`/`uninstall()`/`save_plugin_config` in `hooks.py` (async install/uninstall —
+  A0 runs coroutine hooks via `asyncio.run`; `save_plugin_config` is sync = the live re-index toggle) ·
+  `startup_migration/_50` (`ensure()` every boot — re-installs the CLI/MCP into the ephemeral venv) +
+  `_55` (reconcile the re-index task) · `monologue_start/_56` (reset the re-index task context) ·
+  `tool_execute_before/_30` (re-index exactly-once guard) · the `api/` ApiHandler
   (`POST /plugins/gitnexus/gitnexus_surface`, action open/close — runs in the web-server process so
   `virtual_desktop.register_session` lands in the in-process gateway registry) · the Canvas surface
   (`register-gitnexus.js` + `gitnexus-surface.html` + `gitnexus-store.js`; the modal is deliberately

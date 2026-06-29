@@ -14,19 +14,18 @@ serve_port: 4747    # `gitnexus serve` graph web UI (what the in-container Chrom
 cdp_port: 9223      # the headless Chromium's CDP/remote-debugging port (bridge connects here)
 bridge_port: 14601  # the screencast bridge (registered with A0's /desktop gateway; != obsidian's)
 
-# Scheduled commit-aware re-index — OPT-IN (off by default). Turn `enabled` on and an Agent Zero
-# ScheduledTask named "GitNexus re-index" is registered that runs helpers/reindex.py on this
-# schedule; turn it off and the task is removed — the toggle takes effect immediately, no restart
-# (same as the github-watch plugin). The task only re-indexes already-indexed git repos whose HEAD
-# moved since they were last indexed (it never discovers or indexes new repos). Once registered you
-# can edit the schedule/time/cadence directly in the Scheduler UI — re-enabling won't overwrite an
-# existing task. `schedule` fields are standard crontab (minute hour day month weekday).
+# Scheduled commit-aware re-index — OPT-IN (off by default). Turn `enabled` on (in the plugin's
+# Config panel) and an Agent Zero ScheduledTask named "GitNexus re-index" runs helpers/reindex.py on
+# the cadence below; turn it off and the task is removed — the toggle takes effect immediately, no
+# restart (same as the github-watch plugin). It only re-indexes already-indexed git repos whose HEAD
+# moved since last indexed (never discovers/indexes new repos). The config is the SOURCE OF TRUTH for
+# the cadence (set it here, not in the Scheduler — Scheduler edits are overwritten on save/boot).
 reindex:
   enabled: false
-  schedule:
-    minute: "0"
-    hour: "6"
-    day: "*"
-    month: "*"
-    weekday: "0"   # 0 = Sunday  ->  weekly, Sundays at 06:00
+  # Cadence preset: 6h | 12h | 1d (daily) | 7d (weekly) | 30d (monthly). Daily/weekly/monthly @ 06:00.
+  interval: "7d"
+  # Advanced: a full 5-field cron "minute hour day month weekday". When set it OVERRIDES interval.
+  cron: ""
+  # Clear the task's conversation after each run so its context can't grow unbounded (each run fresh).
+  reset_context: true
   timezone: ""     # "" = Agent Zero's configured timezone

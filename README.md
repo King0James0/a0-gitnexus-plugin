@@ -38,8 +38,8 @@ Agent Zero spawns `gitnexus mcp` and exposes its tools to the agent. Because A0 
 
 A GitNexus index is a snapshot — it reflects a repo at the commit it was analyzed at, so it drifts out of date as you keep committing. To keep it current the plugin can register a scheduled task — **opt-in, off by default.** Turn **Scheduled re-index** on in the plugin's **Config** panel and the task is registered; turn it off and it's removed — the toggle takes effect immediately, no restart:
 
-- **Task name:** `GitNexus re-index` (visible and editable under Agent Zero's **Scheduler**).
-- **Default schedule:** Sundays at 06:00, in Agent Zero's configured timezone.
+- **Task name:** `GitNexus re-index` (visible in Agent Zero's **Scheduler**; set its cadence in the plugin's **Config** panel).
+- **Default cadence:** Weekly (Sundays at 06:00), in Agent Zero's configured timezone — change it in the Config panel (**Interval** preset or **Custom cron**).
 - **What it does each run:** reads the GitNexus registry and, for every repo you've already indexed that is a git work-tree, compares the repo's current `HEAD` against the commit it was last indexed at. If they differ, it runs an incremental `gitnexus analyze` on that repo; if not, it skips it (so an idle week does almost no work).
 - **What it does *not* do:** it never indexes new repos. You decide what to index (`gitnexus analyze <path>`); the task only keeps current what you already chose.
 
@@ -48,23 +48,20 @@ A GitNexus index is a snapshot — it reflects a repo at the commit it was analy
 The work and the schedule are deliberately separated:
 
 - **A deterministic helper does all the work.** `helpers/reindex.py` is plain Python — it reads the registry, does the commit comparison, and runs `gitnexus analyze` on the repos that changed. No model/LLM is involved in the indexing logic itself.
-- **The scheduled task is purely the visible trigger.** The `GitNexus re-index` task carries no logic; its instruction is just *"run `helpers/reindex.py` and report the summary."* It exists so the schedule is something you can see, edit, disable, or delete from the Scheduler UI.
+- **The scheduled task is purely the visible trigger.** The `GitNexus re-index` task carries no logic; its instruction is just *"run `helpers/reindex.py` and report the summary."* It exists so the schedule is something you can see, run on demand, disable, or delete from the Scheduler UI (the cadence itself is set in the Config panel).
 - **Triggering goes through the agent loop.** Agent Zero runs every scheduled task by handing its prompt to the agent (that's the only execution path A0 has), so when the task fires the agent's single action is to run the helper via its code-execution tool. There is **no background thread** — nothing runs the helper except this task, so it never double-fires.
 - **Cost:** because the trigger passes through the agent, each run spends a small amount of the model's budget on that one "run this command" hop — *not* on the indexing, which is the deterministic helper's job.
 
-### Editing the schedule
+### Setting the schedule
 
-Change the cadence, time, or timezone whenever you like — once the task exists the plugin never overwrites your edits, and re-enabling won't recreate a task you've edited (turning `reindex.enabled` off removes it):
+The cadence lives in the plugin's **Config** panel — the config is the **source of truth** (applied on save and on every boot, so editing the task's schedule directly in the Scheduler gets overwritten; change it here instead):
 
-1. Open Agent Zero and go to the **Scheduler** (the tasks/clock panel).
-2. Find the task named **`GitNexus re-index`** and open it for editing.
-3. Edit the **schedule** — it's a standard 5-field crontab (`minute hour day month weekday`). Examples:
-   - `0 6 * * 0` — weekly, Sundays at 06:00 (the default)
-   - `0 3 * * *` — every day at 03:00
-   - `0 */6 * * *` — every 6 hours
-4. Set the **timezone** if you want it to differ from Agent Zero's default.
-5. **Save.** The new schedule takes effect immediately. To run it right now, use the task's **Run** action — it executes the same helper on demand.
-6. To pause it, **disable** the task; to stop it entirely, **delete** it. To turn it off at install time instead, set `reindex.enabled: false` in the plugin config; to change the install-time default schedule, edit `reindex.schedule` there.
+- **Interval** — a preset dropdown: every **6h** / **12h**, **Daily**, **Weekly** (the default), or **Monthly**. Daily/weekly/monthly run at 06:00.
+- **Custom schedule (cron)** — a 5-field crontab (`minute hour day month weekday`) for anything the presets can't express (e.g. `0 3 * * *` = daily at 03:00). **Overrides the interval when set.**
+- **Reset context each run** — clear the task's conversation after each run so its context can't grow unbounded (on by default).
+- **Timezone** — set `reindex.timezone` in the config to differ from Agent Zero's default.
+
+The task still appears in Agent Zero's **Scheduler**, where you can see its history, **Run** it on demand, or **disable**/delete it. To turn the whole feature off, switch **Scheduled re-index** off in the Config panel (it removes the task).
 
 **Limitations:** repos indexed with `--skip-git` (or non-git folders) have no commit to compare, so they aren't auto-refreshed; re-index those manually.
 

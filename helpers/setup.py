@@ -538,11 +538,50 @@ def _delete_reindex_marker() -> None:
         pass
 
 
+def _reindex_cron_ok(expr: str) -> bool:
+    """True if expr is a valid 5-field crontab the scheduler can use."""
+    try:
+        from crontab import CronTab
+
+        CronTab(crontab=expr)
+        return len(expr.split()) == 5
+    except Exception:
+        return False
+
+
+# Cadence preset token -> 5-field cron. Daily/weekly/monthly run at 06:00 (off-peak).
+_REINDEX_INTERVALS = {
+    "6h": "0 */6 * * *",
+    "12h": "0 */12 * * *",
+    "1d": "0 6 * * *",
+    "7d": "0 6 * * 0",
+    "30d": "0 6 1 * *",
+}
+
+
+def _reindex_schedule(cfg: dict):
+    """Build the re-index TaskSchedule. Precedence: a valid custom cron (reindex.cron) wins; else the
+    interval preset (reindex.interval); else weekly (Sundays 06:00). The config is the source of
+    truth for the cadence — applied on every reconcile (like the github-watch plugin)."""
+    from helpers.task_scheduler import TaskSchedule
+
+    custom = str(cfg.get("cron", "") or "").strip()
+    if custom:
+        if _reindex_cron_ok(custom):
+            f = custom.split()
+            return TaskSchedule(minute=f[0], hour=f[1], day=f[2], month=f[3], weekday=f[4])
+        _log(f"ignoring invalid reindex cron {custom!r}; using the interval preset instead")
+    token = str(cfg.get("interval", "") or "").strip().lower()
+    f = _REINDEX_INTERVALS.get(token, _REINDEX_INTERVALS["7d"]).split()
+    return TaskSchedule(minute=f[0], hour=f[1], day=f[2], month=f[3], weekday=f[4])
+
+
 async def reconcile_reindex_task(cfg_reindex: dict | None = None) -> None:
     """Create/remove the re-index ScheduledTask to match config — OPT-IN, off by default.
 
-    Mirrors the github-watch plugin: enabled -> ensure the task exists (renaming the pre-1.2.8
-    "GitNexus weekly re-index" task IN PLACE if found, preserving the user's schedule/uuid);
+    Mirrors the github-watch plugin: enabled -> ensure the task exists and set its cadence from
+    config (interval preset or custom cron — the config is the SOURCE OF TRUTH, applied every
+    reconcile); the pre-1.2.8 "GitNexus weekly re-index" task is renamed IN PLACE (uuid kept).
     disabled -> remove it. Idempotent; best-effort (logs, never raises). Runs on install, on boot,
     and the moment the plugin config is saved."""
     cfg = cfg_reindex if cfg_reindex is not None else (_config().get("reindex") or {})
@@ -568,24 +607,25 @@ async def reconcile_reindex_task(cfg_reindex: dict | None = None) -> None:
             _delete_reindex_marker()
             return
 
+        schedule = _reindex_schedule(cfg)
+        tz = (cfg.get("timezone") or "").strip() or None
+        if tz:
+            schedule.timezone = tz  # normalized at read by the scheduler's get_next_run
+
         if current:
+            # config is the source of truth for the cadence (like github-watch): apply the interval/
+            # cron from config every reconcile, and migrate the legacy name in place (uuid kept).
             t = current[0]
-            if t.name == REINDEX_TASK_NAME_OLD:  # migrate the legacy name in place (keep schedule/uuid)
-                t.update(name=REINDEX_TASK_NAME)
-                await sched.save()
+            updates = {"schedule": schedule}
+            if t.name == REINDEX_TASK_NAME_OLD:
+                updates["name"] = REINDEX_TASK_NAME
                 _log(f"renamed re-index task '{REINDEX_TASK_NAME_OLD}' -> '{REINDEX_TASK_NAME}'")
+            t.update(**updates)
+            await sched.save()
             _write_reindex_marker(t.uuid)
+            _log(f"re-index task updated ({schedule.to_crontab()})")
             return
 
-        sc = cfg.get("schedule") or {}
-        schedule = TaskSchedule(
-            minute=str(sc.get("minute", "0")),
-            hour=str(sc.get("hour", "6")),
-            day=str(sc.get("day", "*")),
-            month=str(sc.get("month", "*")),
-            weekday=str(sc.get("weekday", "0")),
-        )
-        tz = (cfg.get("timezone") or "").strip() or None
         helper = os.path.join(_plugin_dir(), "helpers", "reindex.py")
         task = ScheduledTask.create(
             name=REINDEX_TASK_NAME,
