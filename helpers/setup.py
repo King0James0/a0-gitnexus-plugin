@@ -21,6 +21,33 @@ import urllib.error
 import urllib.request
 
 PLUGIN_NAME = "gitnexus"
+
+# clean_env: least-privilege env for spawned children (gitnexus CLI, headless chromium) — they must
+# NOT inherit A0's runtime secrets. Multi-name shim + inline fallback (identical allowlist) so a
+# missing import can't re-leak or break.
+clean_env = None  # type: ignore[assignment]
+for _se_name in ("usr.plugins.gitnexus.helpers.secure_env",
+                 "plugins.gitnexus.helpers.secure_env",
+                 "helpers.secure_env", "secure_env"):
+    try:
+        import importlib
+        clean_env = importlib.import_module(_se_name).clean_env  # type: ignore
+        break
+    except Exception:  # pragma: no cover
+        continue
+if clean_env is None:  # pragma: no cover - import fallback; identical to secure_env.clean_env
+    def clean_env(extra=None, *, allow=(), proxy=True):  # type: ignore[misc]
+        _k = {"PATH", "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE",
+              "TZ", "DISPLAY", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "XDG_CACHE_HOME",
+              "XDG_DATA_HOME", "TMPDIR", "TMP", "TEMP"} | set(allow)
+        if proxy:
+            _k |= {"HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "ALL_PROXY", "NO_PROXY",
+                   "http_proxy", "https_proxy", "ftp_proxy", "all_proxy", "no_proxy"}
+        _e = {k: os.environ[k] for k in _k if k in os.environ}
+        if extra:
+            _e.update({k: v for k, v in extra.items() if v is not None})
+        return _e
+
 # Marker dropped in the plugin dir when THIS plugin installed the gitnexus CLI, so uninstall
 # only removes a binary we added (never a gitnexus the user installed independently).
 INSTALL_MARKER = ".installed-gitnexus"
@@ -341,6 +368,7 @@ def ensure_serving(cfg: dict | None = None) -> bool:
         log = open(os.path.join(rt, "serve.log"), "ab")
         subprocess.Popen(
             [gx, "serve", "--port", str(port), "--host", "127.0.0.1"],
+            env=clean_env(extra={"HOME": rt}),
             stdout=log, stderr=log, start_new_session=True,
         )
     except Exception as e:
@@ -385,7 +413,7 @@ def launch_renderer(cfg: dict) -> bool:
         "--window-size=1440,900", "--disable-dev-shm-usage",
         f"http://localhost:{_serve_port(cfg)}/",
     ]
-    env = {**os.environ, "HOME": rt}
+    env = clean_env(extra={"HOME": rt})
     try:
         spec = {"argv": argv, "env": {k: str(v) for k, v in env.items()},
                 "cfg_dir": udir, "log": os.path.join(rt, "chrome.log"),
