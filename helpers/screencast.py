@@ -346,14 +346,18 @@ class Client:
 # `user-select:none` app shell, so NOTHING in the canvas could be highlighted — which means there
 # was nothing for the clipboard relay to copy. We override both with CSS (Prism is a plain <pre>,
 # so this works, unlike a Monaco editor). Selection is forced on text containers (pre/code + the
-# detail panels), NOT the graph — the graph is SVG/canvas and keeps drag-to-pan. Injected on every
-# (re)connect + on reload.
+# detail panels), NOT the graph — the graph is SVG/canvas and keeps drag-to-pan. Also wrap the
+# source-picker tab row ([role=tablist] — a nowrap flex of flex-1 tabs with min-width:auto) so its
+# 4th tab (Local Folder) wraps to a 2nd row instead of clipping off-edge at narrow canvas widths.
+# Injected on every (re)connect + on reload.
 _INJECT_CSS_JS = (
     "(function(){var id='a0-gn-wrap';var s=document.getElementById(id);"
     "if(!s){s=document.createElement('style');s.id=id;"
     "(document.head||document.documentElement).appendChild(s);}"
     "s.textContent='pre{white-space:pre-wrap !important;overflow-wrap:anywhere !important;}"
     "pre code{white-space:inherit !important;}"
+    "[role=tablist]{flex-wrap:wrap !important;}"
+    "[role=tablist]>*{min-width:0 !important;}"
     "pre,pre *,code,code *{-webkit-user-select:text !important;user-select:text !important;}"
     "p,span,td,th,li,h1,h2,h3,h4,h5,h6,label,[class*=detail],[class*=inspector],[class*=panel]"
     "{-webkit-user-select:text !important;user-select:text !important;}"
