@@ -401,6 +401,7 @@ _APP_GUARD_JS = (
     "(function(){"
     "if(window.__a0gxGuard)return;window.__a0gxGuard=true;"
     "var ORIGIN=location.origin,recovering=false,lastErr='';"
+    "try{window.addEventListener('webglcontextlost',function(){window.__a0glLost=true;},true);}catch(_){}"
     "function hide(root){try{"
     "root.querySelectorAll('a').forEach(function(a){var h=a.href||'';"
     "if(h.indexOf('abhigyanpatwari/GitNexus')>=0||h.indexOf('/sponsors/')>=0)a.style.display='none';});"
@@ -642,36 +643,31 @@ class Bridge:
                     pass
 
     async def webgl_health(self) -> None:
-        """Heal a dead GPU: the graph view needs software-WebGL, whose ANGLE/SwiftShader EGL init can
-        fail under load and stay dead for the renderer's whole session, blanking the graph. While
-        someone is watching, probe WebGL availability; on a SUSTAINED failure relaunch the renderer
-        (a fresh process gets a fresh GPU). Conservative: a few consecutive failures (skips the
-        post-(re)launch GPU-init transient) + a cooldown so it can't thrash."""
-        probe = ("(function(){try{var c=document.createElement('canvas');"
-                 "return !!(c.getContext('webgl2')||c.getContext('webgl'));}catch(e){return false;}})()")
-        consecutive = 0
+        """Heal a genuinely dead GPU WITHOUT adding to the WebGL-context budget. Chromium caps active
+        WebGL contexts (~16) and evicts the OLDEST when exceeded; the graph view already holds several
+        contexts, so a polling probe that creates its OWN canvas/context every tick (the old design)
+        accumulates contexts faster than GC reclaims them, eventually pushing past the cap and silently
+        evicting the graph's own context — blanking it to white on idle, while the probe's fresh context
+        still succeeds so the heal never fires. Instead we OBSERVE: the app-guard installs a
+        capture-phase `webglcontextlost` listener that sets `window.__a0glLost`; here we only READ that
+        flag (no context creation). On a real loss (cooldown-gated) relaunch for a fresh GPU process."""
         last_heal = 0.0
+        flag = "(function(){var v=!!window.__a0glLost;window.__a0glLost=false;return v;})()"
         while True:
             await asyncio.sleep(8.0)
             cdp = self.cdp
             if not cdp or not self.clients:
-                consecutive = 0
                 continue
             try:
                 r = await cdp.call("Runtime.evaluate",
-                                   {"expression": probe, "returnByValue": True}, timeout=5)
-                ok = bool(r.get("result", {}).get("value"))
+                                   {"expression": flag, "returnByValue": True}, timeout=5)
+                lost = bool(r.get("result", {}).get("value"))
             except Exception:
-                ok = True  # can't tell -> never risk a needless relaunch
-            if ok:
-                consecutive = 0
-                continue
-            consecutive += 1
-            if consecutive < 3 or (self._loop.time() - last_heal) < 90:
+                lost = False  # can't tell -> never risk a needless relaunch
+            if not lost or (self._loop.time() - last_heal) < 90:
                 continue
             last_heal = self._loop.time()
-            consecutive = 0
-            print("[webgl-heal] WebGL unavailable — relaunching the renderer for a fresh GPU", flush=True)
+            print("[webgl-heal] graph WebGL context lost — relaunching the renderer for a fresh GPU", flush=True)
             self._kill_renderer()
 
     # --- auto-refresh on index change ------------------------------------------------------

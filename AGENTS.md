@@ -41,8 +41,11 @@ uninstall-clean.
    **app-guard** (`_APP_GUARD_JS`: hides upstream chrome that's dead in the embedded canvas — Nexus AI,
    its AI Settings gear, the Star / Sponsor CTAs, and the AI output-language selector — and on a
    blank/crash overlays a message + returns to the repo picker) and runs
-   a **WebGL self-heal** (`webgl_health` → `_kill_renderer` relaunches the renderer when software-WebGL
-   dies — the cause of graph-view black screens). Keep these intact.
+   a **WebGL self-heal** (`webgl_health`): the app-guard installs a `webglcontextlost` listener that
+   sets `window.__a0glLost`; the coroutine only READS that flag and relaunches via `_kill_renderer` on
+   a real loss. It MUST NEVER probe by creating its own canvas/context — Chromium caps active WebGL
+   contexts (~16) and a per-tick probe accumulates contexts that evict the graph's own (white-on-idle,
+   the v1.2.14 fix). Keep these intact.
 5. **The runtime dir lives OUT of the watched plugin tree.** `_runtime_dir()` returns
    `usr/gitnexus-runtime` (the Chromium profile, logs, `relaunch.json`). A0 watches plugin roots
    recursively; the Chromium profile churns the filesystem and would trip A0's startup-watchdog
