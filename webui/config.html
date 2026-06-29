@@ -1,0 +1,37 @@
+<html>
+<head><title>GitNexus</title></head>
+<body>
+<div x-data>
+  <template x-if="config">
+    <div x-init="if (!config.reindex) config.reindex = { enabled: false }">
+      <div class="section-title">GitNexus — Scheduled re-index</div>
+      <div class="section-description">
+        Keep your indexed code graphs fresh. When on, the plugin registers an Agent Zero scheduled task
+        named <code>GitNexus re-index</code> that re-runs <code>gitnexus analyze</code> on any repo you've
+        already indexed whose latest commit changed since it was last indexed (it never indexes new repos
+        &mdash; that's your call). Off by default; turning it off removes the task. Changes apply on save
+        &mdash; no restart.
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <div class="field-title">Scheduled re-index</div>
+          <div class="field-description">
+            Register the recurring re-index task. Default schedule: <b>weekly, Sundays at 06:00</b> (Agent
+            Zero's timezone). Once it's on you can change the time/cadence anytime in Agent Zero's
+            <b>Scheduler</b> &mdash; find the task named <code>GitNexus re-index</code>.
+          </div>
+        </div>
+        <div class="field-control">
+          <label class="toggle">
+            <input type="checkbox" x-model="config.reindex.enabled"
+              x-init="if (config.reindex.enabled === undefined || config.reindex.enabled === null) config.reindex.enabled = false" />
+            <span class="toggler"></span>
+          </label>
+        </div>
+      </div>
+    </div>
+  </template>
+</div>
+</body>
+</html>

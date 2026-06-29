@@ -36,7 +36,7 @@ Agent Zero spawns `gitnexus mcp` and exposes its tools to the agent. Because A0 
 
 ## Keeping indexes fresh
 
-A GitNexus index is a snapshot — it reflects a repo at the commit it was analyzed at, so it drifts out of date as you keep committing. To keep it current the plugin can register a scheduled task — **opt-in, off by default.** Turn `reindex.enabled` on in the plugin config and the task is registered; turn it off and it's removed — the toggle takes effect immediately, no restart:
+A GitNexus index is a snapshot — it reflects a repo at the commit it was analyzed at, so it drifts out of date as you keep committing. To keep it current the plugin can register a scheduled task — **opt-in, off by default.** Turn **Scheduled re-index** on in the plugin's **Config** panel and the task is registered; turn it off and it's removed — the toggle takes effect immediately, no restart:
 
 - **Task name:** `GitNexus re-index` (visible and editable under Agent Zero's **Scheduler**).
 - **Default schedule:** Sundays at 06:00, in Agent Zero's configured timezone.

@@ -112,6 +112,11 @@ uninstall-clean.
   changes — it must watch the registry `gitnexus serve` ACTUALLY writes (`<runtime>/.gitnexus/
   registry.json`, since serve runs with `HOME=<runtime>`), NOT the bridge process's own `~/.gitnexus`
   (which is `/root/.gitnexus` and never exists). Wiring the wrong path silently disables auto-refresh.
+- Config screen: A0 shows a plugin config tab IFF `webui/config.html` exists (`helpers/plugins.py`
+  `has_config_screen`); `settings_sections` is separate (extra settings sections, not required). The
+  panel's `config` is the saved `config.json` OR defaults (never merged) — gitnexus's `config.html`
+  binds the re-index opt-in toggle to `config.reindex.enabled` (single-quoted Alpine attrs only — a raw
+  `"` inside an `x-*` attr blanks the panel; verify the render in a real browser).
 - Canvas gateway: `helpers.virtual_desktop.register_session(token, host, port, ...)` +
   `session_url(token)` proxy a loopback HTTP+WS service through A0's `/desktop` gateway; the gateway may
   split/merge large WS messages, so the bridge uses length-prefixed binary records (never rely on WS
