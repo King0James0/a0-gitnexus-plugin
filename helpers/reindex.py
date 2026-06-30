@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """GitNexus plugin — scheduled commit-aware re-index worker.
 
-Pure stdlib, no Agent Zero framework imports (it runs as a bare script via the agent's
-code-execution tool):
+Pure stdlib, no Agent Zero framework imports. Used two ways: (1) imported in-process by the native
+`gitnexus_reindex` tool via `run_reindex()` — which is how the scheduled task runs it (off the event
+loop, no terminal session); and (2) as a bare CLI script:
 
     python3 /a0/usr/plugins/gitnexus/helpers/reindex.py
 
@@ -106,16 +107,24 @@ def _head(path: str) -> str | None:
     return None
 
 
-def main() -> int:
+def run_reindex() -> dict:
+    """Refresh-changed-only re-index. Returns a summary dict: {refreshed, skipped, fail, note}.
+
+    Pure stdlib + subprocess, so it is safe to call IN-PROCESS — the native `gitnexus_reindex` tool
+    runs this off the event loop (avoiding A0's terminal session, whose loop-bound output queue
+    raises "Queue is bound to a different event loop" on a manually-run task) — OR as the CLI below.
+    Never raises (per-repo try/except + bounded subprocess timeouts)."""
     gx = shutil.which("gitnexus")
     if not gx:
-        _log("gitnexus CLI not on PATH; nothing to do")
-        return 0
+        note = "gitnexus CLI not on PATH; nothing to do"
+        _log(note)
+        return {"refreshed": 0, "skipped": 0, "fail": 0, "note": note}
 
     entries = _load_registry()
     if not entries:
-        _log("no indexed repos in registry; nothing to do")
-        return 0
+        note = "no indexed repos in registry; nothing to do"
+        _log(note)
+        return {"refreshed": 0, "skipped": 0, "fail": 0, "note": note}
 
     refreshed = skipped = fail = 0
     for entry in entries:
@@ -153,7 +162,13 @@ def main() -> int:
             fail += 1
             _log(f"FAILED {name}: {e}")
 
-    _log(f"done: refreshed={refreshed} skipped={skipped} fail={fail}")
+    note = f"done: refreshed={refreshed} skipped={skipped} fail={fail}"
+    _log(note)
+    return {"refreshed": refreshed, "skipped": skipped, "fail": fail, "note": note}
+
+
+def main() -> int:
+    run_reindex()
     return 0
 
 

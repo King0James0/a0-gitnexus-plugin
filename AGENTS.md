@@ -58,28 +58,36 @@ uninstall-clean.
    is the SOURCE OF TRUTH, like github-watch — Scheduler edits get overwritten); the pre-1.2.8
    "GitNexus weekly re-index" is renamed in place (uuid kept). disabled → remove it. Runs on
    `install`, on boot (`startup_migration/_55`), and on `save_plugin_config` (live toggle, no restart).
-   The reused task context is reset each run by `monologue_start/_56` (gated on `reindex.reset_context`
-   default on + the task ctx id; mirrors github's `_80`) so it can't grow unbounded; `_56` ALSO drops the
-   code-exec shell (`_cet_state`) every run (UNGATED) so reindex.py runs on a shell bound to THAT run's
-   event loop — a manual web-API run uses a different loop than the one that created the reused context's
-   shell, and reusing it raises `<Queue> is bound to a different event loop`. The WORKER
-   (`reindex.py`) is **refresh-changed-only**: NEVER discovers/indexes new repos, only re-runs `analyze`
-   on already-indexed git work-trees whose HEAD moved (`--skip-agents-md` keeps this DOX pure).
-7. **`reindex.py` is pure stdlib — no Agent Zero imports.** It runs as a bare script
-   (`python3 .../helpers/reindex.py`) launched by the agent's code-exec tool from the ScheduledTask;
-   there is NO background thread, so it can never double-fire. Keep it framework-free and best-effort
-   (per-repo try/except, bounded subprocess timeouts) so one bad repo can't fail the run.
+   The reused task context's HISTORY is reset each run by `monologue_start/_56` (gated on
+   `reindex.reset_context` default on + the task ctx id; mirrors github's `_80`) so it can't grow
+   unbounded. The WORKER (`reindex.py`) is **refresh-changed-only**: NEVER discovers/indexes new repos,
+   only re-runs `analyze` on already-indexed git work-trees whose HEAD moved (`--skip-agents-md` keeps
+   this DOX pure).
+7. **The re-index runs as the native `gitnexus_reindex` TOOL, in-process — NOT via code-exec.**
+   The ScheduledTask's prompt tells the agent to call `tools/gitnexus_reindex.py`, which imports
+   `reindex.run_reindex()` and runs it OFF the event loop via `asyncio.to_thread` (bounded by
+   `reindex.run_deadline_secs`, default 1800s). This is the whole reason it is a native tool and not a
+   `python3 .../reindex.py` code-exec invocation: A0's terminal session keeps a loop-bound output
+   `Queue`, and a MANUAL web-API run executes on a different event loop than the one that created the
+   reused context's shell — reading that shell raised `<Queue> is bound to a different event loop` and
+   the run never finished (cron runs share one loop, so only MANUAL runs broke). A native tool never
+   touches the terminal path (same pattern as vivy_curate), so it completes on both cron AND a manual
+   Run. `reconcile_reindex_task()` repoints any pre-1.2.16 code-exec task to the tool on update (uuid
+   kept). `reindex.py` stays **pure stdlib — no Agent Zero imports** (dual-use: imported in-process by
+   the tool, and runnable as a bare CLI); keep it framework-free and best-effort (per-repo try/except,
+   bounded subprocess timeouts) so one bad repo can't fail the run.
 8. **The re-index runs exactly once per cycle.** `tool_execute_before/_30_gitnexus_reindex_once` blocks
-   a weak utility model from re-running `reindex.py` within one scheduled run (RepairableException;
-   keyed on the run's `last_user_message.id` so it self-resets each cycle; scoped to the task's OWN
-   context id so a manual run in a normal chat is unaffected). `helpers/run_once.py` holds the
-   sys-attached state. Always on (no config knob).
+   a weak utility model from calling the `gitnexus_reindex` tool more than once within one scheduled run
+   (RepairableException; keyed on the run's `last_user_message.id` so it self-resets each cycle; scoped
+   to the task's OWN context id so a manual `gitnexus_reindex` call in a normal chat is unaffected).
+   `helpers/run_once.py` holds the sys-attached state. Always on (no config knob).
 
 ## Build discipline
-- **Framework boundary.** Only `helpers/setup.py`, `hooks.py`, the `api/` handler, and the
+- **Framework boundary.** Only `helpers/setup.py`, `hooks.py`, the `api/` handler, the `tools/` and
   `extensions/` files import Agent Zero (`from helpers...`, `usr.plugins.gitnexus...`).
   `helpers/reindex.py` and `helpers/screencast.py` are standalone stdlib/subprocess scripts — keep them
-  importable and runnable with no A0 present.
+  importable and runnable with no A0 present (`reindex.py` is dual-use: also imported in-process by the
+  `gitnexus_reindex` tool).
 - **Per change:** `py_compile` every `.py` via `/opt/venv-a0/bin/python -m py_compile`; keep
   `default_config.yaml` ↔ the README config table ↔ the keys read in `setup.py` in lockstep; bump
   `plugin.yaml` `version` on a release and cut a tagged GitHub Release with notes.
@@ -116,15 +124,19 @@ uninstall-clean.
   nothing changed (see invariant 2).
 - Scheduled tasks: `helpers.task_scheduler` (`TaskScheduler.get()` → `reload()` → `find_task_by_name`
   / `add_task` / `remove_task_by_uuid` → `save()`); A0 runs every ScheduledTask by feeding its prompt
-  to the agent loop (no other execution path) — that's why the re-index task's only action is "run this
-  command," with the real work in the deterministic helper. `ScheduledTask.check_schedule()` is a
-  STATELESS ~60s cron window (no `last_run` catch-up — `job_loop` ticks 60s; setting `last_run` is a
-  no-op for cron tasks); `find_task_by_name` is a SUBSTRING match (probe full names).
-- Code-exec shells are LOOP-BOUND + persisted: `code_execution_tool.prepare_state` stores the shell in
-  agent-data `_cet_state`, and the tty session's `asyncio.Queue` binds to the event loop it is first read
-  on. A context reused across loops — e.g. a MANUAL scheduled-task run via the web API (each request runs
-  on its own loop) — must reset `_cet_state` per run, or `read_output` raises `<Queue> is bound to a
-  different event loop`. `prepare_state` rebuilds a fresh shell when `_cet_state` is None (the `_56` path).
+  to the agent loop (no other execution path) — that's why the re-index task's only action is "call the
+  `gitnexus_reindex` tool once," with the real work in the deterministic in-process worker. `update()`
+  applies `schedule`/`system_prompt`/`prompt` to a live task in place (the reconcile repoint path).
+  `ScheduledTask.check_schedule()` is a STATELESS ~60s cron window (no `last_run` catch-up — `job_loop`
+  ticks 60s; setting `last_run` is a no-op for cron tasks); `find_task_by_name` is a SUBSTRING match
+  (probe full names).
+- Code-exec shells are LOOP-BOUND + persisted (why the re-index is a native tool, not a code-exec
+  script): `code_execution_tool.prepare_state` stores the shell in agent-data `_cet_state`, and the tty
+  session's `asyncio.Queue` binds to the event loop it is first read on. A context reused across loops —
+  e.g. a MANUAL scheduled-task run via the web API (each request runs on its own loop) — that reads that
+  shell raises `<Queue> is bound to a different event loop`. A native tool (`asyncio.to_thread`) never
+  opens a terminal session, so it sidesteps this entirely — do NOT route scheduled-task work through
+  code-exec.
 - Canvas auto-refresh: the bridge's `registry_watch` reloads the page when the gitnexus registry
   changes — it must watch the registry `gitnexus serve` ACTUALLY writes (`<runtime>/.gitnexus/
   registry.json`, since serve runs with `HOME=<runtime>`), NOT the bridge process's own `~/.gitnexus`

@@ -68,6 +68,20 @@ REINDEX_TASK_NAME = "GitNexus re-index"
 # Prior name (pre-1.2.8) — renamed in place on reconcile so existing installs migrate cleanly.
 REINDEX_TASK_NAME_OLD = "GitNexus weekly re-index"
 REINDEX_TASK_MARKER = ".reindex-task-uuid"
+# The task calls the native `gitnexus_reindex` TOOL — NOT `python3 reindex.py` via the code-execution
+# tool. Shelling it out broke a manually-run task: A0's terminal output queue is bound to the event
+# loop that created the shell, and a manual Run executes on a DIFFERENT loop, so reading the result
+# raised "<Queue> is bound to a different event loop". A native tool stays off that path entirely
+# (same shape as vivy_curate), so the task completes on both cron and a manual Run.
+REINDEX_SYSTEM_PROMPT = (
+    "You are a maintenance task runner. Call the gitnexus_reindex tool exactly once, then report "
+    "only its one-line summary. Take no other actions and ask no questions."
+)
+REINDEX_PROMPT = (
+    "Call the gitnexus_reindex tool once to refresh the GitNexus index of any already-indexed repos "
+    "whose code changed since they were last indexed, then reply with its one-line summary. Do not "
+    "call any other tool, and do not call gitnexus_reindex more than once."
+)
 
 
 def _log(msg: str) -> None:
@@ -616,7 +630,11 @@ async def reconcile_reindex_task(cfg_reindex: dict | None = None) -> None:
             # config is the source of truth for the cadence (like github-watch): apply the interval/
             # cron from config every reconcile, and migrate the legacy name in place (uuid kept).
             t = current[0]
-            updates = {"schedule": schedule}
+            # config is the source of truth for cadence; ALSO repoint the prompt to the native tool
+            # (pre-1.2.16 installs created this task to shell out `python3 reindex.py` via code-exec).
+            updates = {"schedule": schedule,
+                       "system_prompt": REINDEX_SYSTEM_PROMPT,
+                       "prompt": REINDEX_PROMPT}
             if t.name == REINDEX_TASK_NAME_OLD:
                 updates["name"] = REINDEX_TASK_NAME
                 _log(f"renamed re-index task '{REINDEX_TASK_NAME_OLD}' -> '{REINDEX_TASK_NAME}'")
@@ -626,15 +644,10 @@ async def reconcile_reindex_task(cfg_reindex: dict | None = None) -> None:
             _log(f"re-index task updated ({schedule.to_crontab()})")
             return
 
-        helper = os.path.join(_plugin_dir(), "helpers", "reindex.py")
         task = ScheduledTask.create(
             name=REINDEX_TASK_NAME,
-            system_prompt=(
-                "You are a maintenance task runner. Run exactly the command in the message using "
-                "the code execution tool (terminal runtime), then report only its final summary "
-                "line. Take no other actions and ask no questions."
-            ),
-            prompt=f"Run this command and report its output:\n\npython3 {helper}",
+            system_prompt=REINDEX_SYSTEM_PROMPT,
+            prompt=REINDEX_PROMPT,
             schedule=schedule,
             timezone=tz,
         )

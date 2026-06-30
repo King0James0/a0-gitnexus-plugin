@@ -1,11 +1,11 @@
-"""Exactly-once: block a repeat run of reindex.py within one scheduled re-index run.
+"""Exactly-once: block a repeat call of the gitnexus_reindex tool within one scheduled re-index run.
 
-The re-index ScheduledTask's agent runs `python3 .../reindex.py`. A weak utility model sometimes
+The re-index ScheduledTask's agent calls the native `gitnexus_reindex` tool. A weak model sometimes
 calls it 2-3x in the same run — wasted re-analysis. This guard lets it run once per run and short-
 circuits repeats with a RepairableException (A0 surfaces it as a warning and re-loops WITHOUT
 failing the task, so the agent reports the result it already has and finishes). Self-resets each
 cycle (keyed on the run's user-message id). Scoped to the re-index task's OWN context (its uuid,
-stored in .reindex-task-uuid) so a manual `reindex.py` run in a normal chat is never affected.
+stored in .reindex-task-uuid) so a manual gitnexus_reindex call in a normal chat is never affected.
 Always on (no config knob).
 """
 
@@ -43,7 +43,7 @@ if _already_ran is None:  # pragma: no cover - identical to run_once.already_ran
         return False
 
 _MARKER = ".reindex-task-uuid"
-_SCRIPT = "reindex.py"
+_TOOL = "gitnexus_reindex"
 
 
 def _reindex_task_id() -> str:
@@ -61,7 +61,7 @@ def _reindex_task_id() -> str:
 class GitnexusReindexOnce(Extension):
 
     async def execute(self, tool_name: str = "", tool_args: dict | None = None, **kwargs):
-        if str(tool_name or "").strip() != "code_execution_tool":
+        if str(tool_name or "").strip() != _TOOL:
             return
         agent = self.agent
         ctx = getattr(agent, "context", None) if agent else None
@@ -70,14 +70,11 @@ class GitnexusReindexOnce(Extension):
         task_id = _reindex_task_id()
         if not task_id or getattr(ctx, "id", None) != task_id:
             return  # only the re-index task's own context — never a normal chat
-        code = str(tool_args.get("code") or "") if isinstance(tool_args, dict) else ""
-        if _SCRIPT not in code:
-            return
         cur = getattr(agent, "last_user_message", None)
         run_id = str(getattr(cur, "id", "") or "")
         if _already_ran(f"gitnexus-reindex:{getattr(ctx, 'id', '')}", run_id):
             raise RepairableException(
                 "The re-index has already run in this cycle — it does not need to run again. "
                 "Report the result from the previous run with the `response` tool and finish. "
-                "Do not run reindex.py again."
+                "Do not call gitnexus_reindex again."
             )
