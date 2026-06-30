@@ -80,14 +80,16 @@ REINDEX_TASK_MARKER = ".reindex-task-uuid"
 # and this task's own system prompt makes each nudge re-run the re-index = an endless loop. So name
 # `response` explicitly and whitelist exactly {gitnexus_reindex, response}.
 REINDEX_SYSTEM_PROMPT = (
-    "You are a maintenance task runner. Call the gitnexus_reindex tool exactly once, then finish by "
-    "calling the response tool with its one-line summary. Use no other tools and ask no questions."
+    "You are a maintenance task runner. Call the gitnexus_reindex tool exactly once, then FINISH the "
+    "task by calling the response tool with its one-line summary. The task only completes when you call "
+    "response — do NOT report with notify_user or any other tool, and ask no questions."
 )
 REINDEX_PROMPT = (
     "Call the gitnexus_reindex tool exactly once to refresh the GitNexus index of any already-indexed "
-    "repos whose code changed since they were last indexed. When it returns, finish the task by calling "
-    "the response tool with its one-line summary as the message. Do not call gitnexus_reindex more than "
-    "once, and do not call any tool other than gitnexus_reindex and response."
+    "repos whose code changed since they were last indexed. When it returns, FINISH the task by calling "
+    "the response tool with its one-line summary as the message. The task only completes when you call "
+    "response: do NOT report with notify_user, do not call gitnexus_reindex more than once, and do not "
+    "call any tool other than gitnexus_reindex and response."
 )
 
 
