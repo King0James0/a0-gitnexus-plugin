@@ -1,7 +1,7 @@
 name: gitnexus
 title: GitNexus
 description: Code-graph queries for Agent Zero via the GitNexus MCP server — dependency and impact analysis, symbol callers, route/tool maps, and Cypher queries over indexed repositories — plus a GitNexus icon in the Canvas rail to explore the live code graph (nodes, edges, flows) visually, and a scheduled re-index that keeps already-indexed repos current as their code changes.
-version: 1.2.16
+version: 1.2.17
 settings_sections: []
 per_project_config: false
 per_agent_config: false

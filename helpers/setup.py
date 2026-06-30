@@ -73,14 +73,21 @@ REINDEX_TASK_MARKER = ".reindex-task-uuid"
 # loop that created the shell, and a manual Run executes on a DIFFERENT loop, so reading the result
 # raised "<Queue> is bound to a different event loop". A native tool stays off that path entirely
 # (same shape as vivy_curate), so the task completes on both cron and a manual Run.
+# The agent MUST finish by calling the built-in `response` tool — that is the only "done" state A0
+# (and an auto-resume watchdog that re-nudges unfinished task chats) recognizes. A weak utility model,
+# told merely to "reply", sometimes invents a non-existent tool (e.g. notify_user) → "misformatted
+# message" → the turn never reaches `response` → the chat is judged unfinished and gets re-nudged,
+# and this task's own system prompt makes each nudge re-run the re-index = an endless loop. So name
+# `response` explicitly and whitelist exactly {gitnexus_reindex, response}.
 REINDEX_SYSTEM_PROMPT = (
-    "You are a maintenance task runner. Call the gitnexus_reindex tool exactly once, then report "
-    "only its one-line summary. Take no other actions and ask no questions."
+    "You are a maintenance task runner. Call the gitnexus_reindex tool exactly once, then finish by "
+    "calling the response tool with its one-line summary. Use no other tools and ask no questions."
 )
 REINDEX_PROMPT = (
-    "Call the gitnexus_reindex tool once to refresh the GitNexus index of any already-indexed repos "
-    "whose code changed since they were last indexed, then reply with its one-line summary. Do not "
-    "call any other tool, and do not call gitnexus_reindex more than once."
+    "Call the gitnexus_reindex tool exactly once to refresh the GitNexus index of any already-indexed "
+    "repos whose code changed since they were last indexed. When it returns, finish the task by calling "
+    "the response tool with its one-line summary as the message. Do not call gitnexus_reindex more than "
+    "once, and do not call any tool other than gitnexus_reindex and response."
 )
 
 
