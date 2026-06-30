@@ -62,7 +62,13 @@ uninstall-clean.
    `reindex.reset_context` default on + the task ctx id; mirrors github's `_80`) so it can't grow
    unbounded. The WORKER (`reindex.py`) is **refresh-changed-only**: NEVER discovers/indexes new repos,
    only re-runs `analyze` on already-indexed git work-trees whose HEAD moved (`--skip-agents-md` keeps
-   this DOX pure).
+   this DOX pure). It reads — and runs `analyze` with HOME set to — the **RUNTIME registry**
+   `<runtime>/.gitnexus/registry.json` that `serve`/indexing writes (HOME=runtime), NOT the process's
+   `~/.gitnexus` (=/root/.gitnexus, always empty → "no indexed repos" right after indexing). The tool
+   passes the canonical A0-resolved path (`files.get_abs_path("usr","gitnexus-runtime")`); `reindex.py`
+   self-resolves the same path from its own location ($GITNEXUS_RUNTIME or `__file__`-relative) so the
+   CLI is correct too. Same registry-path lesson as the canvas auto-refresh fix (invariant unchanged
+   below).
 7. **The re-index runs as the native `gitnexus_reindex` TOOL, in-process — NOT via code-exec.**
    The ScheduledTask's prompt tells the agent to call `tools/gitnexus_reindex.py`, which imports
    `reindex.run_reindex()` and runs it OFF the event loop via `asyncio.to_thread` (bounded by

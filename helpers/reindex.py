@@ -7,10 +7,11 @@ loop, no terminal session); and (2) as a bare CLI script:
 
     python3 /a0/usr/plugins/gitnexus/helpers/reindex.py
 
-Reads the gitnexus registry (~/.gitnexus/registry.json) and, for every already-indexed
-git repo whose HEAD has moved since it was last indexed, runs an incremental
-`gitnexus analyze`. "Refresh changed only" — we never discover or index new repos; we
-only keep current what the user already chose to index.
+Reads the gitnexus registry that `gitnexus serve`/indexing writes — the plugin's out-of-tree
+runtime dir (usr/gitnexus-runtime/.gitnexus/registry.json), resolved by _resolve_runtime_registry,
+NOT the process's ~/.gitnexus — and for every already-indexed git repo whose HEAD has moved since it
+was last indexed, runs an incremental `gitnexus analyze`. "Refresh changed only" — we never discover
+or index new repos; we only keep current what the user already chose to index.
 
 Skipped: repos whose HEAD is unchanged, repos that aren't git work-trees, repos whose
 path is gone, and repos indexed without git tracking (empty `lastCommit`).
@@ -51,10 +52,28 @@ if clean_env is None:  # pragma: no cover - import fallback; identical to secure
             _e.update({k: v for k, v in extra.items() if v is not None})
         return _e
 
-REGISTRY = os.path.expanduser("~/.gitnexus/registry.json")
 LOG_FILE = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "reindex.log")
 )
+
+
+def _resolve_runtime_registry() -> tuple:
+    """Resolve (registry_path, home) for the registry that `gitnexus serve`/indexing actually uses.
+
+    gitnexus runs with HOME set to the plugin's out-of-tree runtime dir (usr/gitnexus-runtime; see
+    setup._runtime_dir + ensure_serving), so its registry lives at <runtime>/.gitnexus/registry.json
+    — NOT the calling process's ~/.gitnexus, which for A0 is /root/.gitnexus and is always empty (that
+    mismatch is why a manual re-index reported "no indexed repos" right after a repo was indexed).
+    Resolve the runtime dir WITHOUT importing Agent Zero: prefer $GITNEXUS_RUNTIME, else derive it from
+    this file's location (usr/plugins/gitnexus/helpers/reindex.py -> usr/gitnexus-runtime). Fall back to
+    ~ only if neither resolves to an existing dir."""
+    rt = os.environ.get("GITNEXUS_RUNTIME") or ""
+    if not rt:
+        here = os.path.dirname(os.path.abspath(__file__))                       # usr/plugins/gitnexus/helpers
+        rt = os.path.normpath(os.path.join(here, "..", "..", "..", "gitnexus-runtime"))  # usr/gitnexus-runtime
+    if os.path.isdir(rt):
+        return os.path.join(rt, ".gitnexus", "registry.json"), rt
+    return os.path.expanduser("~/.gitnexus/registry.json"), os.path.expanduser("~")
 
 
 def _ts() -> str:
@@ -71,14 +90,14 @@ def _log(msg: str) -> None:
         pass
 
 
-def _load_registry() -> list:
+def _load_registry(path: str) -> list:
     try:
-        with open(REGISTRY, encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
         return []
     except Exception as e:
-        _log(f"could not read registry {REGISTRY}: {e}")
+        _log(f"could not read registry {path}: {e}")
         return []
     return data if isinstance(data, list) else []
 
@@ -107,22 +126,30 @@ def _head(path: str) -> str | None:
     return None
 
 
-def run_reindex() -> dict:
+def run_reindex(registry_path: str | None = None, home: str | None = None) -> dict:
     """Refresh-changed-only re-index. Returns a summary dict: {refreshed, skipped, fail, note}.
 
-    Pure stdlib + subprocess, so it is safe to call IN-PROCESS — the native `gitnexus_reindex` tool
-    runs this off the event loop (avoiding A0's terminal session, whose loop-bound output queue
-    raises "Queue is bound to a different event loop" on a manually-run task) — OR as the CLI below.
-    Never raises (per-repo try/except + bounded subprocess timeouts)."""
+    registry_path/home default to the gitnexus RUNTIME registry (where serve/indexing writes — see
+    _resolve_runtime_registry), NOT ~/.gitnexus; `gitnexus analyze` runs with HOME=home so it updates
+    that same registry. The native `gitnexus_reindex` tool passes the canonical A0-resolved paths; the
+    CLI / a bare call self-resolves from this file's location.
+
+    Pure stdlib + subprocess, so it is safe to call IN-PROCESS — the tool runs it off the event loop
+    (avoiding A0's terminal session, whose loop-bound output queue raises "Queue is bound to a different
+    event loop" on a manually-run task). Never raises (per-repo try/except + bounded timeouts)."""
+    if registry_path is None or home is None:
+        reg, rt = _resolve_runtime_registry()
+        registry_path = registry_path or reg
+        home = home or rt
     gx = shutil.which("gitnexus")
     if not gx:
         note = "gitnexus CLI not on PATH; nothing to do"
         _log(note)
         return {"refreshed": 0, "skipped": 0, "fail": 0, "note": note}
 
-    entries = _load_registry()
+    entries = _load_registry(registry_path)
     if not entries:
-        note = "no indexed repos in registry; nothing to do"
+        note = f"no indexed repos in registry ({registry_path}); nothing to do"
         _log(note)
         return {"refreshed": 0, "skipped": 0, "fail": 0, "note": note}
 
@@ -150,7 +177,7 @@ def run_reindex() -> dict:
             _log(f"re-index {name}: {last[:7]} -> {head[:7]}")
             r = subprocess.run(
                 [gx, "analyze", path, "--skip-agents-md", "--name", name],
-                env=clean_env(extra={"HOME": os.path.expanduser("~")}),
+                env=clean_env(extra={"HOME": home}),  # write back to the SAME runtime registry
                 capture_output=True, text=True, timeout=1800,
             )
             if r.returncode == 0:

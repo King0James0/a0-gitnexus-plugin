@@ -11,6 +11,7 @@ never raises into the agent loop.
 """
 
 import asyncio
+import os
 
 from helpers.tool import Tool, Response
 from helpers import plugins
@@ -35,6 +36,18 @@ def _load_reindex():
     return None
 
 
+def _runtime_paths():
+    """Resolve (registry_path, home) for the runtime registry that gitnexus serve/indexing uses, the
+    canonical A0 way (files.get_abs_path -> usr/gitnexus-runtime, matching setup._runtime_dir). Returns
+    (None, None) so run_reindex falls back to self-resolving from its own file location."""
+    try:
+        from helpers import files
+        rt = files.get_abs_path("usr", "gitnexus-runtime")
+        return os.path.join(rt, ".gitnexus", "registry.json"), rt
+    except Exception:
+        return None, None
+
+
 class GitnexusReindex(Tool):
     async def execute(self, **kwargs):
         rx = _load_reindex()
@@ -49,8 +62,10 @@ class GitnexusReindex(Tool):
             deadline = float(cfg.get("run_deadline_secs") or RUN_DEADLINE_SECS)
         except Exception:
             deadline = RUN_DEADLINE_SECS
+        reg, home = _runtime_paths()
         try:
-            result = await asyncio.wait_for(asyncio.to_thread(rx.run_reindex), timeout=deadline)
+            result = await asyncio.wait_for(
+                asyncio.to_thread(rx.run_reindex, reg, home), timeout=deadline)
         except asyncio.TimeoutError:
             return Response(
                 message="gitnexus_reindex: large repos are still re-indexing — it will finish in the "
